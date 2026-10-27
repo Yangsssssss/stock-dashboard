@@ -1,0 +1,32 @@
+server:
+  port: 8848
+  address: 127.0.0.1
+
+spring:
+  application:
+    name: quantboard-server
+  servlet:
+    multipart:
+      max-file-size: 15MB
+      max-request-size: 15MB
+  datasource:
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:quantboard}?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=%2B08:00&forceConnectionTimeZoneToSession=true&connectTimeout=4000&socketTimeout=20000
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 6
+      minimum-idle: 1
+      connection-timeout: 5000
+  jackson:
+    default-property-inclusion: always
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+quantboard:
+  db-name: ${DB_NAME:quantboard}
+  migration-dir: ${user.dir}/db/migration
+  fx-hkd: 0.92      # 近似汇率：约合人民币换算用（静态值，仅供量级参考）
+  fx-usd: 7.15

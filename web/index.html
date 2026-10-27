@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>多市场股票看板 · A股 / 港股 / 美股 / ETF / 基金</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">Q</div>
+      <div class="brand-txt"><b>QuantBoard</b><span>多市场看板</span></div>
+    </div>
+
+    <nav id="nav">
+      <div class="nav-group">市场</div>
+      <a class="nav-item active" data-view="overview"><span class="ico">◎</span>总览</a>
+      <a class="nav-item" data-view="a"><span class="ico">A</span>A 股</a>
+      <a class="nav-item" data-view="hk"><span class="ico">港</span>港股</a>
+      <a class="nav-item" data-view="us"><span class="ico">美</span>美股</a>
+      <a class="nav-item" data-view="etf"><span class="ico">E</span>ETF</a>
+      <a class="nav-item" data-view="fund"><span class="ico">基</span>基金</a>
+      <a class="nav-item" data-view="watch"><span class="ico">★</span>自选股</a>
+      <div class="nav-group">资产</div>
+      <a class="nav-item" data-view="port"><span class="ico">▦</span>持仓</a>
+      <div class="nav-group">分析</div>
+      <a class="nav-item" data-view="signals"><span class="ico">▲</span>技术信号榜</a>
+      <a class="nav-item" data-view="corr"><span class="ico">⊞</span>相关性矩阵</a>
+    </nav>
+
+    <div class="side-foot">
+      <div class="upd"><span class="dot" id="liveDot"></span><span id="updTime">加载中…</span></div>
+      <div class="side-actions">
+        <button class="btn ghost" id="refreshBtn" title="立即刷新">刷新</button>
+        <button class="btn ghost" id="themeBtn" title="切换主题">◐</button>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoChk" checked />
+        <span>25 秒自动刷新</span>
+      </label>
+      <div class="dbstat" id="dbStat"><span class="dot"></span>MySQL 连接中…</div>
+      <div class="disclaimer">数据来源：腾讯行情 / 东方财富<br/>仅供研究，不构成投资建议</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="ticker-wrap"><div class="ticker" id="ticker"></div></div>
+
+    <div class="views">
+      <!-- 总览 -->
+      <section class="view active" id="v-overview">
+        <div class="page-head">
+          <h1>市场总览</h1>
+          <p id="headline">正在拉取实时行情…</p>
+        </div>
+        <div class="mkt-grid" id="mktCards"></div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>核心指数</h2><span class="hint">45 日走势 · 点击查看详情</span></div>
+          <div class="idx-grid" id="idxGrid"></div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head"><h2>A 股行业板块</h2><span class="hint" id="sectorHint">申万二级 · 按涨幅</span></div>
+            <div class="bars" id="sectorUp"></div>
+            <div class="divider"><span>跌幅居前</span></div>
+            <div class="bars" id="sectorDown"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>信号速览</h2><a class="link" data-view="signals">全部 →</a></div>
+            <div class="mini-rank" id="miniTop"></div>
+            <div class="divider"><span>弱势警示</span></div>
+            <div class="mini-rank" id="miniBottom"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 单个市场 -->
+      <section class="view" id="v-market">
+        <div class="page-head">
+          <h1 id="mktTitle">A 股</h1>
+          <p id="mktDesc">—</p>
+          <button class="btn page-add" id="mktAddBtn">＋ 添加标的</button>
+        </div>
+        <div class="stat-row" id="mktStats"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>成分列表</h2>
+            <div class="seg" id="kindSeg">
+              <button class="seg-btn active" data-kind="all">全部</button>
+              <button class="seg-btn" data-kind="index">指数</button>
+              <button class="seg-btn" data-kind="stock">个股</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="tbl" id="mktTable"></table></div>
+        </div>
+      </section>
+
+      <!-- 信号榜 -->
+      <section class="view" id="v-signals">
+        <div class="page-head">
+          <h1>技术信号榜</h1>
+          <p>多因子评分（趋势 / 动量 / 量能 / 相对强弱 / 超买超卖），0–100，≥72 强势，≤30 弱势。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>全部标的评分</h2>
+            <div class="seg" id="sigSeg">
+              <button class="seg-btn active" data-f="all">全部</button>
+              <button class="seg-btn" data-f="a">A 股</button>
+              <button class="seg-btn" data-f="hk">港股</button>
+              <button class="seg-btn" data-f="us">美股</button>
+              <button class="seg-btn" data-f="etf">ETF</button>
+              <button class="seg-btn" data-f="fund">基金</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="tbl" id="sigTable"></table></div>
+        </div>
+      </section>
+
+      <!-- 自选 -->
+      <section class="view" id="v-watch">
+        <div class="page-head">
+          <h1>自选股</h1>
+          <p>自选清单存在 MySQL（watchlist 表），重启与换设备都在。任意表格里点 ★ 即可加入或移出。</p>
+        </div>
+        <div class="stat-row" id="watchStats"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>我的自选</h2>
+            <span class="hint" id="watchHint"></span>
+            <button class="btn ghost danger" id="watchBatchDel" style="display:none">移除选中</button>
+          </div>
+          <div class="table-wrap"><table class="tbl" id="watchTable"></table></div>
+        </div>
+      </section>
+
+      <!-- 持仓 -->
+      <section class="view" id="v-port">
+        <div class="page-head">
+          <h1>持仓</h1>
+          <p id="portDesc">按券商分组记录数量与成本，行情与盈亏实时计算。数据存 MySQL holding 表。</p>
+          <div class="page-actions">
+            <button class="btn ghost" id="portOcrBtn">📷 图片识别</button>
+            <button class="btn" id="portAddBtn">＋ 手动添加</button>
+          </div>
+        </div>
+        <div class="stat-row" id="portStats"></div>
+        <div id="portBrokers"></div>
+      </section>
+
+      <!-- 相关性 -->
+      <section class="view" id="v-corr">
+        <div class="page-head">
+          <h1>跨市场相关性</h1>
+          <p>以近 60 个交易日日收益率计算皮尔逊相关系数 —— 用来判断你的 A股 / 港股 / 美股 / ETF / 债基配置是否真的分散。</p>
+        </div>
+        <div class="two-col wide-left">
+          <div class="panel">
+            <div class="panel-head"><h2>相关系数矩阵</h2><span class="hint">1.0 完全同步 · 0 无关 · 负值 反向</span></div>
+            <div id="corrBox"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>解读</h2></div>
+            <div class="readout" id="corrRead"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+
+<div class="mask" id="mgMask"></div>
+
+<!-- 标的管理弹窗 -->
+<div class="modal" id="mgModal">
+  <div class="modal-head">
+    <h3>管理看板标的</h3>
+    <button class="btn ghost" id="mgClose">✕</button>
+  </div>
+  <div class="mg-search">
+    <input id="mgInput" type="text" placeholder="搜索名称 / 拼音 / 代码，如 茅台、Tencent、sh600036" autocomplete="off" />
+  </div>
+  <div class="mg-results" id="mgResults"><div class="mg-empty">输入关键词搜索全球标的，点击即加入看板</div></div>
+  <div class="mg-sec">
+    <div class="mg-sec-head"><b>我的自定义标的</b><span class="hint" id="mgCustomHint"></span>
+      <button class="btn ghost danger" id="mgBatchDel" style="display:none">移出选中</button></div>
+    <div id="mgCustomList"></div>
+  </div>
+</div>
+
+<!-- 移出确认 -->
+<div class="mask" id="cfMask"></div>
+<div class="modal confirm-modal" id="cfModal">
+  <div class="cf-badge">!</div>
+  <h3 id="cfTitle">移出标的</h3>
+  <p id="cfText">—</p>
+  <div class="cf-btns">
+    <button class="btn ghost" id="cfCancel">取消</button>
+    <button class="btn solid-danger" id="cfOk">移出看板</button>
+  </div>
+</div>
+
+<!-- 持仓：手动添加 -->
+<div class="mask" id="paMask"></div>
+<div class="modal pa-modal" id="paModal">
+  <div class="modal-head">
+    <h3>添加持仓</h3>
+    <button class="btn ghost" id="paClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <label>券商 / 账户<input id="paBroker" list="brokerList" type="text" placeholder="如 中信证券、富途、长桥" /></label>
+    <datalist id="brokerList"></datalist>
+    <label>代码<input id="paCode" type="text" placeholder="600036 / 00988 / NVDA" /></label>
+    <label>数量<input id="paQty" type="number" min="0" step="any" placeholder="100" /></label>
+    <label>成本价<input id="paCost" type="number" min="0" step="any" placeholder="320.50" /></label>
+    <div class="pa-err" id="paErr"></div>
+    <div class="pa-btns">
+      <button class="btn ghost" id="paCancel">取消</button>
+      <button class="btn" id="paSave">保存</button>
+    </div>
+    <div class="small">保存后自动从行情拉取名称与币种；同券商同代码为覆盖更新。</div>
+  </div>
+</div>
+
+<!-- 持仓：图片识别 -->
+<div class="mask" id="poMask"></div>
+<div class="modal po-modal" id="poModal">
+  <div class="modal-head">
+    <h3>截图识别持仓</h3>
+    <button class="btn ghost" id="poClose">✕</button>
+  </div>
+  <div class="po-steps">
+    <div class="po-pick" id="poPick">
+      <input id="poFile" type="file" accept="image/*" hidden />
+      <div class="po-pick-inner">点击选择或拖入券商 App 的持仓页截图<br/>
+      <span class="small">本地 OCR（macOS Vision / tesseract），图片不会上传到任何第三方</span></div>
+    </div>
+    <div id="poPreviewWrap" style="display:none">
+      <img id="poPreview" alt="截图预览" />
+      <div class="po-status" id="poStatus">识别中…</div>
+    </div>
+    <div id="poRows" class="po-rows"></div>
+    <div class="po-import" id="poImportBar" style="display:none">
+      <label>导入到券商 / 账户<input id="poBroker" type="text" placeholder="如 富途" /></label>
+      <button class="btn" id="poImport">导入所选</button>
+    </div>
+  </div>
+</div>
+
+<script src="common.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

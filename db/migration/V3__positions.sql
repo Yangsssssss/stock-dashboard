@@ -1,0 +1,14 @@
+-- 持仓：按券商分组，支持同一标的在多个券商各持一份
+CREATE TABLE IF NOT EXISTS holding (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+  broker     VARCHAR(64)  NOT NULL COMMENT '券商 / 账户名',
+  code       VARCHAR(32)  NOT NULL COMMENT '内部代码 sh600036/hk09988/usNVDA',
+  name       VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '名称（识别或行情补全）',
+  qty        DECIMAL(18,4) NOT NULL DEFAULT 0 COMMENT '持仓数量（支持碎股）',
+  cost       DECIMAL(18,6) NOT NULL DEFAULT 0 COMMENT '成本价',
+  currency   VARCHAR(8)   NOT NULL DEFAULT 'CNY',
+  note       VARCHAR(255) NOT NULL DEFAULT '',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_broker_code (broker, code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='持仓';

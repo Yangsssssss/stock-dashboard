@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>标的详情 · QuantBoard</title>
+<link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="stock.css" />
+</head>
+<body class="st-body">
+<header class="st-top">
+  <a class="st-back" id="stBack" href="index.html" title="返回看板（Esc）">← 看板</a>
+  <div class="st-id">
+    <h1 id="stName">加载中…</h1>
+    <div class="st-meta">
+      <span id="stCode">—</span>
+      <span class="tag" id="stGroup">—</span>
+      <span class="small" id="stTs"></span>
+    </div>
+  </div>
+  <div class="st-quote">
+    <div class="st-last" id="stLast">—</div>
+    <div class="st-chg" id="stChg">—</div>
+  </div>
+  <div class="st-acts">
+    <button class="btn ghost" id="stStar" title="加入 / 移出自选">★ 自选</button>
+    <button class="btn ghost danger" id="stRemove" title="从看板移除该标的">移出看板</button>
+    <button class="btn ghost" id="stTheme" title="切换主题">◐</button>
+  </div>
+</header>
+
+<main class="st-main">
+  <section class="st-col-main">
+    <div class="panel">
+      <div class="chart-tabs" id="stTabs">
+        <button class="ct active" data-days="120">日线 120</button>
+        <button class="ct" data-days="250">日线 250</button>
+        <button class="ct" data-tab="fin" id="stTabFin" title="季度财报（仅个股）">财报</button>
+      </div>
+      <div id="klineWrap">
+        <canvas id="kline"></canvas>
+        <div class="legend">
+          <span><i style="background:#f0a63d"></i>MA5</span>
+          <span><i style="background:#5b8def"></i>MA10</span>
+          <span><i style="background:#b26cf0"></i>MA20</span>
+          <span><i style="background:#8b93a3"></i>MA60</span>
+        </div>
+      </div>
+      <div id="finPanel" style="display:none"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>关键指标</h2></div>
+      <div class="kv-grid st-kv" id="stKv"></div>
+    </div>
+  </section>
+
+  <aside class="st-col-side">
+    <div class="panel">
+      <div class="panel-head"><h2>综合评分</h2></div>
+      <div class="score-row">
+        <div class="score-num" id="stScore">—</div>
+        <div class="score-right">
+          <span class="chip" id="stSignal">—</span>
+          <div class="score-bar"><i id="stScoreBar"></i></div>
+        </div>
+      </div>
+      <p class="conclusion" id="stConcl">—</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>因子拆解</h2></div>
+      <div class="fac" id="stFactors"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>评分历史 · 近 30 日</h2></div>
+      <canvas id="histCanvas"></canvas>
+      <div class="small" id="histHint" style="margin-top:6px"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>关键价位</h2></div>
+      <div class="lv" id="stLevels"></div>
+    </div>
+  </aside>
+</main>
+
+<script src="common.js"></script>
+<script src="stock.js"></script>
+</body>
+</html>

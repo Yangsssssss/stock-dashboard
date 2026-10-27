@@ -1,0 +1,21 @@
+# 构建产物
+backend-java/target/
+.cache/
+*.log
+
+# 本地配置（含数据库口令）
+.env
+.env.local
+
+# IDE / 系统
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Agent 工作区数据
+.workbuddy/
+
+# Python 遗留目录缓存
+__pycache__/
+*.pyc
