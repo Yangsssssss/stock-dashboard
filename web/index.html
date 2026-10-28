@@ -247,7 +247,8 @@
             组合侧按<b>时间加权</b>（TWR）折算：每天用「(期末净值 − 当日入金) ÷ 期初净值」计收益，中途加仓不会稀释收益率；
             基准取该指数的日收盘，按组合的交易日对齐（港美股休市不一致时取前一个交易日）。
             两条线都从区间首日的 100 起画，所以「超额」= 组合涨幅 − 基准涨幅，是剔除出入金后真正可比的部分。
-            基准默认沪深300，可在 <code>application.yml</code> 的 <code>quantboard.benchmark</code> 改成 hkHSI / usSPY 等。
+            基准默认标普500（<code>usINX</code>），可在 <code>application.yml</code> 的 <code>quantboard.benchmark</code> 改成 sh000300 / hkHSI 等。
+            <b>注意</b>：标普500 以美元计价，而组合净值已折算为人民币，两者之间不含汇率变动的影响。
           </p>
         </div>
         <div class="two-col">

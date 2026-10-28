@@ -1679,7 +1679,7 @@ function renderPerf() {
   const bh = $('#benchHint');
   if (bh) {
     bh.textContent = bm.ready
-      ? `${bm.name}（${String(bm.code).toUpperCase()}） · 组合 ${bm.port_ret > 0 ? '+' : ''}${fmt(bm.port_ret, 2)}%`
+      ? `${bm.name}${bm.ccy && bm.ccy !== 'CNY' ? `（${bm.ccy} 计价）` : ''} · 组合 ${bm.port_ret > 0 ? '+' : ''}${fmt(bm.port_ret, 2)}%`
         + ` vs 基准 ${bm.bm_ret > 0 ? '+' : ''}${fmt(bm.bm_ret, 2)}%`
         + ` · 超额 ${bm.excess > 0 ? '+' : ''}${fmt(bm.excess, 2)}%`
       : (bm.note || '基准数据加载中…');

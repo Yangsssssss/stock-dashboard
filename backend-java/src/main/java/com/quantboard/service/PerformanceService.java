@@ -37,8 +37,8 @@ public class PerformanceService {
     private final String defaultBenchmarkName;
 
     public PerformanceService(JdbcTemplate jdbc, TradeService trades, FeedService feed, FxService fx,
-                              @Value("${quantboard.benchmark:sh000300}") String defaultBenchmark,
-                              @Value("${quantboard.benchmark-name:沪深300}") String defaultBenchmarkName) {
+                              @Value("${quantboard.benchmark:usINX}") String defaultBenchmark,
+                              @Value("${quantboard.benchmark-name:标普500}") String defaultBenchmarkName) {
         this.jdbc = jdbc;
         this.trades = trades;
         this.feed = feed;
@@ -590,7 +590,10 @@ public class PerformanceService {
         String bmCode = code == null || code.isBlank() ? defaultBenchmark : code.trim();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("code", bmCode);
-        out.put("name", bmCode.equals(defaultBenchmark) ? defaultBenchmarkName : bmCode.toUpperCase());
+        out.put("name", bmCode.equalsIgnoreCase(defaultBenchmark) ? defaultBenchmarkName : bmCode.toUpperCase());
+        // 基准自身的计价币种：组合净值是人民币，美股/港股基准与组合同币种才严格可比
+        String ccy = bmCode.startsWith("us") ? "USD" : bmCode.startsWith("hk") ? "HKD" : "CNY";
+        out.put("ccy", ccy);
         out.put("rows", List.of());
         if (hist == null || hist.size() < 2) {
             out.put("ready", false);

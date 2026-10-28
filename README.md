@@ -150,7 +150,7 @@ await QBAlert({ title: '提示', text: '已配置 DeepSeek Key' });
 | `GET /api/guru/changes?investor=` | 本期 vs 上期调仓（新建 / 加仓 / 减仓 / 清仓 + 未变计数），需指定单家机构 |
 | `GET/POST /api/guru` | 机构与持仓 CRUD（add_investor / update_investor / remove_investor / add / remove） |
 | `POST /api/guru/import` | 从 SEC EDGAR 拉取 13F-HR 并入库（同步，5–20 秒）。`{"id":1,"skip":0}` 取最新一期，`skip=1` 取上一期（补历史供环比使用） |
-| `GET /api/performance?days=&benchmark=` | 收益报告：总览 / 区间收益 / 净值曲线 / 标的贡献 / 最大回撤 / 基准对比（默认 sh000300） |
+| `GET /api/performance?days=&benchmark=` | 收益报告：总览 / 区间收益 / 净值曲线 / 标的贡献 / 最大回撤 / 基准对比（默认 usINX 标普500，可传 sh000300 / hkHSI） |
 | `POST /api/guru/names` | 补齐持仓标的中文名（腾讯行情批量取名 + 手工词典，已收录的跳过，可反复调用） |
 | `POST /api/guru/cusip-map?limit=100` | 补齐 13F 的 CUSIP → 美股代码映射（OpenFIGI 权威映射，已查过的跳过）。单个请求只处理 `limit` 个，返回的 `left` 归零即补完 |
 | `POST /api/guru/cusip-search?limit=100` | OpenFIGI 查不到美国挂牌的 CUSIP，改用东方财富搜索接口按中文名 / 13F 发行名反查（名称逐级截短，命中率约七成） |
