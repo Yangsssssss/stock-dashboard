@@ -91,13 +91,21 @@ public class GuruService {
         try {
             ensureSeed();
             List<Map<String, Object>> investors = jdbc.queryForList(
+                    // 各家最新一期的持仓数与市值走派生表（一次算完再 join）。
+                    // 原先用三个相关子查询 `quarter = (SELECT MAX(...) WHERE guru_id = g.id)`，
+                    // MySQL 会对 g 的每一行重算一遍，5727 行时单条 2.4 秒。
                     "SELECT g.id, g.name, g.name_cn, g.gtype, g.cik, g.note, g.sort_no, "
-                            + "(SELECT MAX(h.quarter) FROM guru_holding h WHERE h.guru_id = g.id) AS latest_quarter, "
-                            + "(SELECT COUNT(*) FROM guru_holding h WHERE h.guru_id = g.id "
-                            + "  AND h.quarter = (SELECT MAX(h2.quarter) FROM guru_holding h2 WHERE h2.guru_id = g.id)) AS holdings, "
-                            + "(SELECT COALESCE(ROUND(SUM(h.value_usd)/1e8, 1), 0) FROM guru_holding h WHERE h.guru_id = g.id "
-                            + "  AND h.quarter = (SELECT MAX(h2.quarter) FROM guru_holding h2 WHERE h2.guru_id = g.id)) AS total_yi "
-                            + "FROM guru g ORDER BY g.sort_no, g.id");
+                            + "m.mq AS latest_quarter, "
+                            + "COALESCE(s.cnt, 0) AS holdings, "
+                            + "COALESCE(s.total_yi, 0) AS total_yi "
+                            + "FROM guru g "
+                            + "LEFT JOIN (SELECT guru_id, MAX(quarter) mq FROM guru_holding GROUP BY guru_id) m "
+                            + "  ON m.guru_id = g.id "
+                            + "LEFT JOIN (SELECT guru_id, quarter, COUNT(*) cnt, "
+                            + "           ROUND(SUM(value_usd)/1e8, 1) total_yi FROM guru_holding "
+                            + "           GROUP BY guru_id, quarter) s "
+                            + "  ON s.guru_id = g.id AND s.quarter = m.mq "
+                            + "ORDER BY g.sort_no, g.id");
             // 每家机构最新报告期的第一大持仓（中文名优先，未收录则用 SEC 英文原名）
             Map<Long, String> topHold = new HashMap<>();
             List<Map<String, Object>> tops = jdbc.queryForList(
@@ -236,17 +244,21 @@ public class GuruService {
             List<Object> args = new ArrayList<>();
             if (guruId > 0) { where.append(" AND h.guru_id = ?"); args.add(guruId); }
             if (!q.isEmpty()) { where.append(" AND h.quarter = ?"); args.add(q); }
-            if (perInvestorLatest) {
-                where.append(" AND h.quarter = (SELECT MAX(h2.quarter) FROM guru_holding h2 WHERE h2.guru_id = h.guru_id)");
-            }
+            // 「各机构最新一期」用派生表 join，不用相关子查询：
+            // 后者会让 MySQL 对每一行重算一次 MAX，5727 行下 COUNT 单条就要 2.4 秒。
+            String latestJoin = perInvestorLatest
+                    ? " JOIN (SELECT guru_id, MAX(quarter) mq FROM guru_holding GROUP BY guru_id) t"
+                    + " ON t.guru_id = h.guru_id AND h.quarter = t.mq"
+                    : "";
 
             long total = 0;
             double totalUsd = 0;
             try {
-                Long c = jdbc.queryForObject("SELECT COUNT(*) FROM guru_holding h" + where, Long.class, args.toArray());
+                Long c = jdbc.queryForObject("SELECT COUNT(*) FROM guru_holding h" + latestJoin + where,
+                        Long.class, args.toArray());
                 total = c == null ? 0 : c;
-                Double v = jdbc.queryForObject("SELECT SUM(h.value_usd) FROM guru_holding h" + where, Double.class,
-                        args.toArray());
+                Double v = jdbc.queryForObject("SELECT SUM(h.value_usd) FROM guru_holding h" + latestJoin + where,
+                        Double.class, args.toArray());
                 totalUsd = v == null ? 0 : v;
             } catch (Exception ignore) {
                 // 统计失败不影响翻页主流程
@@ -261,6 +273,7 @@ public class GuruService {
                     + "c.name_cn, h.shares, h.value_usd, h.pct, h.note FROM guru_holding h "
                     + "JOIN guru g ON g.id = h.guru_id "
                     + "LEFT JOIN security_cn c ON c.code = SUBSTRING_INDEX(h.code, '~', 1)"
+                    + latestJoin
                     + where + " ORDER BY h.value_usd DESC, h.id LIMIT ? OFFSET ?";
             List<Map<String, Object>> rows = jdbc.queryForList(sql, pageArgs.toArray());
             for (Map<String, Object> r : rows) {
