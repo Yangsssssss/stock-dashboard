@@ -69,7 +69,11 @@ backend-java/
     indicator/AnalysisService.java          多因子评分引擎 + 相关性矩阵
     db/DbService.java                       MySQL 持久层（建库、迁移、批量 upsert、自选/自定义标的）
     service/BoardService.java               看板组装（并行抓取、缓存、异步落库）
+    service/CollectService.java             定时采集（15:35 A股收盘 / 04:35 美股收盘）+ 快照保留清理
+    service/FxService.java                  汇率按日入库（USD/HKD 兑 CNY），全站估值口径唯一来源
+    service/PerformanceService.java         收益引擎（净投入口径 + 时间加权 + 基准对比）
     web/ApiController.java                  全部 REST 端点
+    web/GlobalExceptionHandler.java         全局异常出口（统一 JSON 错误体）
     web/StaticConfig.java                   静态资源直接服务 web/ 目录（前端即时生效）
   src/main/resources/application.yml        端口 / 数据源 / 连接池
 legacy/                                     原 Python 版后端（保留备查）
@@ -142,9 +146,11 @@ await QBAlert({ title: '提示', text: '已配置 DeepSeek Key' });
 | `GET /api/news?force=1` | 消息中心：新浪 7×24 快讯 5 页（按政策/企业/市场/国际归类）+ 持仓与自选标的的东财公告，3 分钟缓存 |
 | `GET /api/trend?code=` | 当天分时（东财 trends2，1 分钟线 + 昨收），市场表格迷你走势按需拉取，服务端缓存 60 秒 |
 | `GET /api/guru` | 大佬持仓总览：跟踪机构列表（最新报告期 / 持仓数 / 市值 / 第一大持仓）+ 报告期 + 共识榜（≥2 家共同持有） |
-| `GET /api/guru/holdings?investor=&quarter=` | 持仓明细（investor=0 为全部机构；quarter 空 = 各机构最新一期） |
+| `GET /api/guru/holdings?investor=&quarter=&page=&size=` | 持仓明细（分页；investor=0 为全部机构，quarter 空 = 各机构最新一期）。返回 `total / pages / from / to / total_yi` |
+| `GET /api/guru/changes?investor=` | 本期 vs 上期调仓（新建 / 加仓 / 减仓 / 清仓 + 未变计数），需指定单家机构 |
 | `GET/POST /api/guru` | 机构与持仓 CRUD（add_investor / update_investor / remove_investor / add / remove） |
-| `POST /api/guru/import` | 从 SEC EDGAR 拉取该机构最新 13F-HR 并入库（同步，5–20 秒） |
+| `POST /api/guru/import` | 从 SEC EDGAR 拉取 13F-HR 并入库（同步，5–20 秒）。`{"id":1,"skip":0}` 取最新一期，`skip=1` 取上一期（补历史供环比使用） |
+| `GET /api/performance?days=&benchmark=` | 收益报告：总览 / 区间收益 / 净值曲线 / 标的贡献 / 最大回撤 / 基准对比（默认 sh000300） |
 | `POST /api/guru/names` | 补齐持仓标的中文名（腾讯行情批量取名 + 手工词典，已收录的跳过，可反复调用） |
 | `POST /api/guru/cusip-map?limit=100` | 补齐 13F 的 CUSIP → 美股代码映射（OpenFIGI 权威映射，已查过的跳过）。单个请求只处理 `limit` 个，返回的 `left` 归零即补完 |
 | `POST /api/guru/cusip-search?limit=100` | OpenFIGI 查不到美国挂牌的 CUSIP，改用东方财富搜索接口按中文名 / 13F 发行名反查（名称逐级截短，命中率约七成） |
@@ -152,17 +158,18 @@ await QBAlert({ title: '提示', text: '已配置 DeepSeek Key' });
 
 ## MySQL 持久层
 
-依赖本机 Docker 的 `mysql:8.0` 容器（连接参数来自 `.env` / 环境变量 `DB_HOST` 等，默认 `root@127.0.0.1:3306/quantboard`）。首次启动自动建库、跑迁移（`db/migration/V1~V11`），表结构：
+依赖本机 Docker 的 `mysql:8.0` 容器（连接参数来自 `.env` / 环境变量 `DB_HOST` 等，默认 `root@127.0.0.1:3306/quantboard`）。首次启动自动建库、跑迁移（`db/migration/V1~V17`），表结构：
 
 | 表 | 内容 |
 |---|---|
 | `instrument` | 标的主数据（代码 / 名称 / 市场 / 类型 / custom 自定义 / hidden 隐藏） |
 | `kline_daily` | 日线（增量 upsert，只补最新日期之后） |
-| `quote_snapshot` | 盘中快照（同标的 180 秒节流） |
+| `quote_snapshot` | 盘中快照（同标的 180 秒节流；每天 05:10 清理 90 天前的行，`quantboard.snapshot-keep-days` 可调） |
 | `daily_score` | 每日多因子评分 + 各因子分项 |
 | `watchlist` | 自选清单（跨会话保留） |
-| `trade` | 交易流水（BUY / SELL / DIV / INIT 逐笔记录，**持仓与成本的唯一真相源**） |
+| `trade` | 交易流水（BUY / SELL / DIV / INIT / **SPLIT 送转股**，**持仓与成本的唯一真相源**；SPLIT 只改股数不动成本总额，每股成本自动摊薄） |
 | `nav_daily` | 每日净值快照（市值 / 净投入 / 已实现 / 股息 / 总收益，供收益曲线使用） |
+| `fx_rate` | 汇率日表 `ccy + rate_date + rate + src`（1 外币 = ? CNY）。全站估值口径，每天 08:10 由 `FxService` 更新，接口带回 `as_of / src / stale` |
 | `family_asset` | 家庭非证券科目台账（现金 / 存款 / 场外基金 / 其他 / 负债，挂成员） |
 | `family_target` | 家庭五大类目标配置占比（a / hk / us / etf_fund / cash_other） |
 | `family_member` | 家庭成员（预置爷爷 / 奶奶 / 爸爸 / 妈妈 / 儿子） |
@@ -178,6 +185,19 @@ await QBAlert({ title: '提示', text: '已配置 DeepSeek Key' });
 
 - 每轮 `/api/board` 组装后异步落库，失败不影响页面；MySQL 不可达时自动降级为纯内存模式
 - 评分历史回填：用 legacy 版 `python3 -m quant.backfill 30`（Python 版保留此用途）
+
+### 定时任务（`CollectService` / `FxService` / `DividendService`）
+
+数据沉淀不再依赖「你有没有打开页面」——服务自己在以下时点跑：
+
+| 时点 | 任务 | 作用 |
+|---|---|---|
+| 15:35 周一–周五 | `CollectService.collectAfterCnClose` | `buildBoard(true)` → 日线 / 评分 / 快照落库 + 当日净值快照 |
+| 04:35 周二–周六 | `CollectService.collectAfterUsClose` | 同上，对应美东周一至周五收盘 |
+| 05:10 每天 | `CollectService.purgeDaily` | 清理 90 天前的 `quote_snapshot`（80 只标的约 6400 行/天） |
+| 08:10 每天 | `FxService.refreshDaily` | 汇率入库（新浪外汇主源，er-api 备源，失败沿用旧值并标 stale） |
+| 20:00 每天 | `DividendService.autoInsertDaily` | A 股分红自动入账（税前推算，可手工改） |
+| 启动时 | `CollectService.snapshotOnBoot` 等 | 补写当日净值快照、预热美股股息缓存、刷新汇率 |
 
 ## 功能
 

@@ -28,6 +28,9 @@ mybatis-plus:
 quantboard:
   db-name: ${DB_NAME:quantboard}
   migration-dir: ${user.dir}/db/migration
+  snapshot-keep-days: 90   # quote_snapshot 保留天数（每天 05:10 清理更早的行）
+  benchmark: sh000300      # 收益对比基准（默认沪深300；可换 hkHSI / usSPY 等）
+  benchmark-name: 沪深300
   fx-hkd: 0.92      # 近似汇率：约合人民币换算用（静态值，仅供量级参考）
   fx-usd: 7.15
   ai:               # 大模型持仓分析（DeepSeek 兼容 OpenAI 接口）

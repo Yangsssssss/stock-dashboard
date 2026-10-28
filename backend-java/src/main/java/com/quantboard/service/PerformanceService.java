@@ -32,29 +32,29 @@ public class PerformanceService {
     private final JdbcTemplate jdbc;
     private final TradeService trades;
     private final FeedService feed;
-    private final double fxHkd;
-    private final double fxUsd;
+    private final FxService fx;
+    private final String defaultBenchmark;
+    private final String defaultBenchmarkName;
 
-    public PerformanceService(JdbcTemplate jdbc, TradeService trades, FeedService feed,
-                              @Value("${quantboard.fx-hkd:0.92}") double fxHkd,
-                              @Value("${quantboard.fx-usd:7.15}") double fxUsd) {
+    public PerformanceService(JdbcTemplate jdbc, TradeService trades, FeedService feed, FxService fx,
+                              @Value("${quantboard.benchmark:sh000300}") String defaultBenchmark,
+                              @Value("${quantboard.benchmark-name:沪深300}") String defaultBenchmarkName) {
         this.jdbc = jdbc;
         this.trades = trades;
         this.feed = feed;
-        this.fxHkd = fxHkd;
-        this.fxUsd = fxUsd;
+        this.fx = fx;
+        this.defaultBenchmark = defaultBenchmark;
+        this.defaultBenchmarkName = defaultBenchmarkName;
     }
 
     // ---------------------------------------------------------------- 汇率
-    /** 静态近似汇率（只做量级参考）。全站唯一出口，前端不再自己换算。 */
+    /** 汇率口径：交给 FxService（按日入库，带取数日期）；这里只做币种分派。 */
     public double fxOf(String currency) {
-        if ("HKD".equalsIgnoreCase(currency)) return fxHkd;
-        if ("USD".equalsIgnoreCase(currency)) return fxUsd;
-        return 1;
+        return fx.rate(currency);
     }
 
     public Map<String, Object> fxMap() {
-        return Map.of("HKD", fxHkd, "USD", fxUsd);
+        return fx.view();
     }
 
     // ---------------------------------------------------------------- 持仓估值
@@ -575,12 +575,104 @@ public class PerformanceService {
         return m;
     }
 
+    // ---------------------------------------------------------------- 基准对比
+    /**
+     * 组合 vs 基准：两条曲线都按「时间加权」处理，同以 100 起步，才具备可比性。
+     *
+     * 组合侧用日度 TWR：r_t = (equity_t − flow_t) / equity_{t−1} − 1，
+     * 其中 equity = 净投入 + 总收益，flow = 净投入的日增量（追加资金不算业绩）。
+     * 直接拿「总收益 ÷ 净投入」去和指数比是错的：中途加仓会把分母抬高、收益率被稀释。
+     *
+     * nav_daily 里 estimated=1 的点是 K 线回溯来的，仍参与计算（否则曲线会有缺口），
+     * 由上层在图上标注。
+     */
+    public Map<String, Object> benchmark(List<Map<String, Object>> hist, String code) {
+        String bmCode = code == null || code.isBlank() ? defaultBenchmark : code.trim();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("code", bmCode);
+        out.put("name", bmCode.equals(defaultBenchmark) ? defaultBenchmarkName : bmCode.toUpperCase());
+        out.put("rows", List.of());
+        if (hist == null || hist.size() < 2) {
+            out.put("ready", false);
+            out.put("note", "历史点不足两个，先积累几天快照");
+            return out;
+        }
+
+        // 1) 组合时间加权指数
+        List<Double> port = new ArrayList<>();
+        double idx = 100;
+        port.add(idx);
+        for (int i = 1; i < hist.size(); i++) {
+            double eqPrev = U.num(hist.get(i - 1).get("invested")) + U.num(hist.get(i - 1).get("total_pl"));
+            double eqNow = U.num(hist.get(i).get("invested")) + U.num(hist.get(i).get("total_pl"));
+            double flow = U.num(hist.get(i).get("invested")) - U.num(hist.get(i - 1).get("invested"));
+            if (eqPrev > 0) {
+                double r = (eqNow - flow) / eqPrev - 1;
+                // 快照断层（停机多日）会产生 ±100% 这类脏日收益，跳过而不是让它污染整条曲线
+                if (r > -0.5 && r < 1.0) idx *= (1 + r);
+            }
+            port.add(idx);
+        }
+
+        // 2) 基准收盘价，按组合的日期取「向前最近一个交易日」的值（应对港美股休市不一致）
+        TreeMap<LocalDate, Double> closes = new TreeMap<>();
+        try {
+            for (Object[] k : feed.fetchKline(bmCode, 700)) {
+                try {
+                    double c = U.num(k[2]);
+                    if (c > 0) closes.put(LocalDate.parse(String.valueOf(k[0]).substring(0, 10)), c);
+                } catch (Exception ignore) { }
+            }
+        } catch (Exception ignore) { }
+        if (closes.isEmpty()) {
+            out.put("ready", false);
+            out.put("note", "基准 " + bmCode + " 的 K 线取不到，暂时无法对比");
+            return out;
+        }
+        Double base = null;
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int i = 0; i < hist.size(); i++) {
+            LocalDate d;
+            try { d = LocalDate.parse(String.valueOf(hist.get(i).get("date"))); }
+            catch (Exception e) { continue; }
+            var e = closes.floorEntry(d);
+            if (e == null) continue;
+            if (base == null) base = e.getValue();
+            double bmIdx = base > 0 ? e.getValue() / base * 100 : 0;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("date", d.toString());
+            row.put("port", U.round(port.get(i), 2));
+            row.put("bm", U.round(bmIdx, 2));
+            row.put("estimated", truthy(hist.get(i).get("estimated")));
+            rows.add(row);
+        }
+        if (rows.size() < 2) {
+            out.put("ready", false);
+            out.put("note", "组合与基准没有重叠的交易日");
+            return out;
+        }
+        double portRet = U.num(rows.get(rows.size() - 1).get("port")) - 100;
+        double bmRet = U.num(rows.get(rows.size() - 1).get("bm")) - 100;
+        out.put("ready", true);
+        out.put("rows", rows);
+        out.put("port_ret", U.round(portRet, 2));
+        out.put("bm_ret", U.round(bmRet, 2));
+        out.put("excess", U.round(portRet - bmRet, 2));
+        out.put("days", rows.size());
+        out.put("note", "");
+        return out;
+    }
+
     /**
      * 收益分析页整包。
      * 关键：整份报告只算一次 values()（内部一次实时行情请求），其余部件全部复用。
      * 早先各部件各自调 values()，一次 report 要打 7 次腾讯行情，页面因此卡 ~2.5s。
      */
     public Map<String, Object> report(int days) {
+        return report(days, null);
+    }
+
+    public Map<String, Object> report(int days, String benchmarkCode) {
         List<Val> vals = values();
         Map<String, Object> summary = summary(vals);
         snapshot(summary);                       // 先落当日快照，history 才读得到今天的点
@@ -591,6 +683,7 @@ public class PerformanceService {
         out.put("history", hist);
         out.put("contributors", contributors(vals));
         out.put("drawdown", drawdown(hist));
+        out.put("benchmark", benchmark(hist, benchmarkCode));
         return out;
     }
 

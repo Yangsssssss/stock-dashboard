@@ -379,11 +379,20 @@ public class ApiController {
         return guru.overview();
     }
 
-    /** 持仓明细：investor=0 全部机构；quarter 空 = 全局最新报告期。 */
+    /** 持仓明细：investor=0 全部机构；quarter 空 = 各机构各自最新一期；分页返回。 */
     @GetMapping("/api/guru/holdings")
     public Map<String, Object> guruHoldings(@RequestParam(defaultValue = "0") long investor,
-                                            @RequestParam(defaultValue = "") String quarter) {
-        return guru.holdings(investor, quarter);
+                                            @RequestParam(defaultValue = "") String quarter,
+                                            @RequestParam(defaultValue = "1") int page,
+                                            @RequestParam(defaultValue = "100") int size) {
+        return guru.holdings(investor, quarter, page, size);
+    }
+
+    /** 环比调仓：本期 vs 上期的新建 / 加仓 / 减仓 / 清仓。investor 必须指定一家机构。 */
+    @GetMapping("/api/guru/changes")
+    public Map<String, Object> guruChanges(@RequestParam(defaultValue = "0") long investor,
+                                           @RequestParam(defaultValue = "") String quarter) {
+        return guru.changes(investor, quarter);
     }
 
     /** 机构 / 持仓 CRUD。action: add_investor / update_investor / remove_investor / add / remove。 */
@@ -424,13 +433,17 @@ public class ApiController {
         }
     }
 
-    /** 从 SEC EDGAR 拉取该机构最新的 13F-HR（同步，约 5–20 秒）。 */
+    /**
+     * 从 SEC EDGAR 拉取该机构的 13F-HR（同步，约 5–20 秒）。
+     * skip=0 取最新一期；skip=1 取上一期（补历史，供环比调仓使用）。
+     */
     @PostMapping("/api/guru/import")
     public ResponseEntity<Map<String, Object>> guruImport(@RequestBody Map<String, Object> body) {
         long id;
         try { id = Long.parseLong(String.valueOf(body.get("id"))); }
         catch (Exception e) { return ResponseEntity.badRequest().body(Map.of("error", "无效 id")); }
-        Map<String, Object> r = guru.import13f(id);
+        int skip = (int) U.num(body.get("skip"));
+        Map<String, Object> r = guru.import13f(id, Math.max(0, Math.min(skip, 12)));
         return r.getOrDefault("ok", false).equals(true)
                 ? ResponseEntity.ok(r) : ResponseEntity.badRequest().body(r);
     }
@@ -500,10 +513,11 @@ public class ApiController {
         }
     }
 
-    /** 收益引擎：一次返回总览、区间收益、净值曲线、标的贡献、最大回撤。 */
+    /** 收益引擎：总览、区间收益、净值曲线、标的贡献、最大回撤、基准对比。 */
     @GetMapping("/api/performance")
-    public Map<String, Object> performance(@RequestParam(defaultValue = "365") int days) {
-        return perf.report(days);
+    public Map<String, Object> performance(@RequestParam(defaultValue = "365") int days,
+                                           @RequestParam(defaultValue = "") String benchmark) {
+        return perf.report(days, benchmark);
     }
 
     /** 手动落一次当日快照（正常由 /api/performance 自动触发）。 */

@@ -182,7 +182,7 @@ public class DividendService {
         for (Map<String, Object> r : rows) {
             String side = String.valueOf(r.get("side"));
             double q = U.num(r.get("qty"));
-            if ("BUY".equals(side) || "INIT".equals(side)) qty += q;
+            if ("BUY".equals(side) || "INIT".equals(side) || "SPLIT".equals(side)) qty += q;
             else if ("SELL".equals(side)) qty -= q;
         }
         if (qty > 1e-9) {

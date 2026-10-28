@@ -36,7 +36,11 @@ const S = {
   guru: null,         // 大佬持仓总览
   guruInv: 0,         // 机构筛选：0 = 全部
   guruQuarter: '',    // 报告期筛选：'' = 全局最新
-  guruRows: null,     // 持仓明细
+  guruRows: null,     // 持仓明细（当前页）
+  guruMeta: null,     // 分页元信息 {total,page,size,pages,from,to,total_yi}
+  guruPage: 1,        // 持仓明细当前页
+  guruSize: 100,      // 每页行数
+  guruChg: null,      // 本期调仓（QoQ diff）
   guruCnTried: false, // 本次会话是否已尝试补标的中文名
 };
 
@@ -801,7 +805,9 @@ function renderPort() {
       <span class="small">浮盈 ${plLines}${reLines ? ' · 已实现 ' + reLines : ''}${dvLines ? ' · 股息 ' + dvLines : ''}</span></div>`);
   }
   if (gd && (S.port.fx.USD !== 1 || S.port.fx.HKD !== 1)) {
-    parts.push(`<div class="stat"><span>汇率</span><b style="font-size:14px">静态 HKD ${S.port.fx.HKD} / USD ${S.port.fx.USD}</b></div>`);
+    const f = S.port.fx || {};
+    const tag = f.as_of ? `（${f.as_of.slice(5)}${f.stale ? ' · 已过期' : ''}）` : '（静态）';
+    parts.push(`<div class="stat"><span>汇率${tag}</span><b style="font-size:14px">HKD ${f.HKD} / USD ${f.USD}</b></div>`);
   }
   stats.innerHTML = parts.join('');
 
@@ -1497,8 +1503,8 @@ async function delPosition(posKey, name) {
 }
 
 /* ---------------- 交易记录 ---------------- */
-const SIDE_LABEL = { BUY: '买入', SELL: '卖出', DIV: '分红', INIT: '期初' };
-const SIDE_CLS = { BUY: 'good', SELL: 'weak', DIV: 'neutral', INIT: 'neutral' };
+const SIDE_LABEL = { BUY: '买入', SELL: '卖出', DIV: '分红', INIT: '期初', SPLIT: '送转股' };
+const SIDE_CLS = { BUY: 'good', SELL: 'weak', DIV: 'neutral', INIT: 'neutral', SPLIT: 'neutral' };
 
 async function loadTrades() {
   try {
@@ -1564,7 +1570,9 @@ async function saveTrade() {
     amount: +$('#trAmount').value || 0,
   };
   if (!body.code) { err.textContent = '请填写代码'; return; }
-  if (side !== 'DIV' && body.qty <= 0) { err.textContent = '买入 / 卖出必须填数量'; return; }
+  if (side === 'SPLIT') {
+    if (!body.qty) { err.textContent = '送转股请填股数：送股 / 拆股为正，并股为负'; return; }
+  } else if (side !== 'DIV' && body.qty <= 0) { err.textContent = '买入 / 卖出必须填数量'; return; }
   if (side === 'DIV' && body.amount <= 0) { err.textContent = '分红请填税后到账金额'; return; }
   try {
     const r = await fetch('/api/trades', {
@@ -1636,7 +1644,7 @@ function renderPerf() {
         · 股息 <b class="${cls(s.div)}">${sgn(s.div)}¥${fmt(Math.abs(s.div), 0)}</b></span></div>
     <div class="stat"><span>总市值 / 持仓数</span>
       <b>¥${fmt(s.mv, 0)}</b>
-      <span class="small">${s.holdings || 0} 只持仓${s.closed ? ` · ${s.closed} 只已清仓` : ''} · 汇率 USD ${(s.fx && s.fx.USD) || '—'} / HKD ${(s.fx && s.fx.HKD) || '—'}</span></div>`;
+      <span class="small">${s.holdings || 0} 只持仓${s.closed ? ` · ${s.closed} 只已清仓` : ''} · 汇率 USD ${(s.fx && s.fx.USD) || '—'} / HKD ${(s.fx && s.fx.HKD) || '—'}${s.fx && s.fx.as_of ? `（${s.fx.as_of.slice(5)}）` : ''}</span></div>`;
 
   // 区间收益
   const iv = d.intervals || [];
@@ -1666,6 +1674,90 @@ function renderPerf() {
     ? `${h[0].date} 起 · ${h.length} 个交易日 · 虚线为 K 线回溯估算`
     : '暂无快照';
   drawPerfCurve($('#perfCurve'), h);
+
+  const bm = d.benchmark || {};
+  const bh = $('#benchHint');
+  if (bh) {
+    bh.textContent = bm.ready
+      ? `${bm.name}（${String(bm.code).toUpperCase()}） · 组合 ${bm.port_ret > 0 ? '+' : ''}${fmt(bm.port_ret, 2)}%`
+        + ` vs 基准 ${bm.bm_ret > 0 ? '+' : ''}${fmt(bm.bm_ret, 2)}%`
+        + ` · 超额 ${bm.excess > 0 ? '+' : ''}${fmt(bm.excess, 2)}%`
+      : (bm.note || '基准数据加载中…');
+  }
+  drawBenchCurve($('#benchCurve'), bm.ready ? bm.rows : null);
+}
+
+/** 组合 vs 基准：两条指数化曲线（同以 100 起步）；组合实线，基准灰色虚线。 */
+function drawBenchCurve(canvas, rows) {
+  if (!canvas) return;
+  const { ctx, w, h } = hdpi(canvas);
+  ctx.clearRect(0, 0, w, h);
+  if (!rows || rows.length < 2) {
+    ctx.fillStyle = 'rgba(128,128,128,.6)';
+    ctx.font = '12px system-ui';
+    ctx.fillText('基准对比需要至少两个交易日的快照，明天起会自动累积', 12, h / 2);
+    return;
+  }
+  const all = rows.flatMap((r) => [r.port, r.bm]);
+  let min = Math.min(...all), max = Math.max(...all);
+  const pad = (max - min) * 0.12 || 1;
+  min -= pad; max += pad;
+  const padL = 48, padR = 12, padT = 16, padB = 22;
+  const iw = w - padL - padR, ih = h - padT - padB;
+  const x = (i) => padL + (i / (rows.length - 1)) * iw;
+  const y = (v) => padT + (1 - (v - min) / (max - min)) * ih;
+
+  ctx.font = '11px system-ui';
+  ctx.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const v = min + (max - min) * (k / 4);
+    const yy = Math.round(y(v)) + 0.5;
+    ctx.strokeStyle = 'rgba(128,128,128,.18)';
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+    ctx.fillStyle = 'rgba(128,128,128,.9)';
+    ctx.fillText(v.toFixed(0), 6, yy + 3);
+  }
+  // 100 基准线
+  const y100 = Math.round(y(100)) + 0.5;
+  ctx.strokeStyle = 'rgba(128,128,128,.45)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(padL, y100); ctx.lineTo(w - padR, y100); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const accent = col('--accent') || '#3355e0';
+  // 基准（灰）
+  ctx.beginPath();
+  rows.forEach((r, i) => (i ? ctx.lineTo(x(i), y(r.bm)) : ctx.moveTo(x(i), y(r.bm))));
+  ctx.strokeStyle = 'rgba(128,128,128,.75)';
+  ctx.lineWidth = 1.4; ctx.lineJoin = 'round';
+  ctx.stroke();
+  // 组合（主色）
+  ctx.beginPath();
+  rows.forEach((r, i) => (i ? ctx.lineTo(x(i), y(r.port)) : ctx.moveTo(x(i), y(r.port))));
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  // 末点
+  const lastIdx = rows.length - 1;
+  [[rows[lastIdx].bm, 'rgba(128,128,128,.75)'], [rows[lastIdx].port, accent]].forEach(([v, c]) => {
+    ctx.beginPath(); ctx.arc(x(lastIdx), y(v), 3, 0, Math.PI * 2); ctx.fillStyle = c; ctx.fill();
+  });
+
+  // 图例
+  ctx.font = '11px system-ui';
+  ctx.fillStyle = accent;
+  ctx.fillText('组合', padL + 4, padT + 2);
+  ctx.fillStyle = 'rgba(128,128,128,.9)';
+  ctx.fillText('基准', padL + 36, padT + 2);
+
+  // 横轴
+  ctx.fillStyle = 'rgba(128,128,128,.9)';
+  [[0, 'left'], [Math.floor(rows.length / 2), 'center'], [lastIdx, 'right']].forEach(([i, al]) => {
+    ctx.textAlign = al;
+    ctx.fillText(rows[i].date.slice(5), x(i), h - 6);
+  });
+  ctx.textAlign = 'left';
 }
 
 /** 净值曲线：画累计总收益，零轴为界，正红负绿；估算段用虚线。 */
@@ -2267,6 +2359,7 @@ async function loadGuru() {
   catch (e) { S.guru = { ready: false, investors: [], quarters: [], consensus: [] }; }
   renderGuru();
   loadGuruHoldings();
+  loadGuruChanges();
   // 还有标的没收录中文名 → 后台补一次（腾讯批量取名），补到就重绘。每次会话只试一次。
   if (!S.guruCnTried && (S.guru.cn_missing || 0) > 0) {
     S.guruCnTried = true;
@@ -2279,11 +2372,148 @@ async function loadGuru() {
 
 async function loadGuruHoldings() {
   try {
-    const r = await fetch(`/api/guru/holdings?investor=${S.guruInv}&quarter=${encodeURIComponent(S.guruQuarter)}`);
+    const r = await fetch(`/api/guru/holdings?investor=${S.guruInv}`
+      + `&quarter=${encodeURIComponent(S.guruQuarter)}&page=${S.guruPage}&size=${S.guruSize}`);
     const d = await r.json();
     S.guruRows = d.rows || [];
-  } catch (e) { S.guruRows = []; }
+    S.guruMeta = d;
+    if (d.page && d.page !== S.guruPage) S.guruPage = d.page;   // 后端纠正过界页码
+  } catch (e) { S.guruRows = []; S.guruMeta = null; }
   renderGuruHoldings();
+  renderGuruPager();
+}
+
+/** 持仓明细分页条：范围 / 总行数 / 上下页 / 每页行数。 */
+function renderGuruPager() {
+  const host = $('#guruPager');
+  if (!host) return;
+  const m = S.guruMeta;
+  if (!m || !m.total) { host.innerHTML = ''; return; }
+  const pages = m.pages || 1;
+  const atFirst = m.page <= 1, atLast = m.page >= pages;
+  host.innerHTML = `
+    <span class="pager-info">第 <b>${fmt(m.from, 0)}–${fmt(m.to, 0)}</b> 行，共 <b>${fmt(m.total, 0)}</b> 行
+      · 合计 $${fmt(m.total_yi || 0, 1)} 亿 · 第 ${m.page}/${pages} 页</span>
+    <span class="pager-ctl">
+      <select id="guruSizeSel" title="每页行数">
+        ${[50, 100, 200, 500].map((n) => `<option value="${n}"${n === m.size ? ' selected' : ''}>${n} 行/页</option>`).join('')}
+      </select>
+      <button class="btn ghost" id="guruPrev" ${atFirst ? 'disabled' : ''}>上一页</button>
+      <button class="btn ghost" id="guruNext" ${atLast ? 'disabled' : ''}>下一页</button>
+    </span>`;
+  const prev = $('#guruPrev'), next = $('#guruNext'), sel = $('#guruSizeSel');
+  if (prev) prev.onclick = () => { if (S.guruPage > 1) { S.guruPage--; loadGuruHoldings(); } };
+  if (next) next.onclick = () => { if (S.guruPage < pages) { S.guruPage++; loadGuruHoldings(); } };
+  if (sel) sel.onchange = (e) => { S.guruSize = +e.target.value; S.guruPage = 1; loadGuruHoldings(); };
+}
+
+/* ------- 大佬持仓：本期调仓（相邻两期对比） ------- */
+const CHG_LABEL = { NEW: '新建', ADD: '加仓', TRIM: '减仓', EXIT: '清仓' };
+const CHG_CLS = { NEW: 'good', ADD: 'good', TRIM: 'weak', EXIT: 'weak' };
+
+async function loadGuruChanges() {
+  if (!S.guruInv) { S.guruChg = null; renderGuruChanges(); return; }
+  try {
+    const r = await fetch(`/api/guru/changes?investor=${S.guruInv}&quarter=${encodeURIComponent(S.guruQuarter)}`);
+    S.guruChg = await r.json();
+  } catch (e) { S.guruChg = null; }
+  renderGuruChanges();
+}
+
+/** 补拉上一期 13F（skip=1）：首次导入只有最新一期，环比需要相邻两期。 */
+async function fetchGuruPrev(btn) {
+  const id = S.guruInv;
+  if (!id || !btn) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '拉取中…';
+  try {
+    const r = await fetch('/api/guru/import', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, skip: 1 }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      btn.disabled = false;
+      btn.textContent = label;
+      const hint = $('#guruChgHint');
+      if (hint) hint.textContent = d.error || '上一期拉取失败';
+      return;
+    }
+    await loadGuru();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+function renderGuruChanges() {
+  const box = $('#guruChgTable');
+  if (!box) return;
+  const hint = $('#guruChgHint');
+  if (!S.guruInv) {
+    if (hint) hint.textContent = '选一家机构后，对比相邻两期的新建 / 加仓 / 减仓 / 清仓';
+    box.innerHTML = '<tbody><tr><td class="hint" style="padding:16px">选择一家机构查看本期调仓 —— 环比只在同一家机构的相邻两期之间比较</td></tr></tbody>';
+    return;
+  }
+  const d = S.guruChg;
+  if (!d || !d.ready) {
+    if (hint) hint.textContent = (d && d.note) || '调仓数据加载中…';
+    box.innerHTML = `<tbody><tr><td class="hint" style="padding:16px">${esc((d && d.note) || '暂无数据')}</td></tr></tbody>`;
+    return;
+  }
+  if (!d.comparable) {
+    if (hint) hint.textContent = d.note || '只有一期数据，无法环比';
+    box.innerHTML = `<tbody><tr><td class="hint" style="padding:16px">
+      ${esc(d.note || '该机构只有一期数据，还没有可比的上期')}
+      <button class="btn ghost" id="guruPrevBtn" style="margin-left:10px;padding:2px 10px;font-size:12px"
+        title="从 SEC 再拉一份更早的 13F-HR，补齐上一期后即可对比">拉取上一期</button>
+    </td></tr></tbody>`;
+    const b = $('#guruPrevBtn');
+    if (b) b.onclick = () => fetchGuruPrev(b);
+    return;
+  }
+  const s = d.summary || {};
+  if (hint) {
+    hint.textContent = `${qCn(d.prev_quarter, true)} → ${qCn(d.quarter, true)} · 新建 ${s.new || 0} · 加仓 ${s.add || 0}`
+      + ` · 减仓 ${s.trim || 0} · 清仓 ${s.exit || 0} · 未变 ${s.hold || 0}`;
+  }
+  const rows = d.rows || [];
+  if (!rows.length) {
+    box.innerHTML = '<tbody><tr><td class="hint" style="padding:16px">这两期持仓没有变化</td></tr></tbody>';
+    return;
+  }
+  const body = rows.map((r) => {
+    const code = r.short_code || baseCode(r.code);
+    const isTicker = /^us/i.test(r.code || '');
+    const dp = r.delta_pct === null || r.delta_pct === undefined ? '—'
+      : (r.delta_pct > 0 ? '+' : '') + fmt(r.delta_pct, 1) + '%';
+    return `<tr>
+      <td><span class="chip ${CHG_CLS[r.action] || 'neutral'}">${CHG_LABEL[r.action] || esc(r.action)}</span></td>
+      <td>${isTicker
+        ? `<b class="link" data-gcode="${esc(baseCode(r.code))}" style="cursor:pointer">${esc(code)}</b>`
+        : '<span class="hint">—</span>'}</td>
+      <td title="${esc(r.name || '')}">${esc(r.label || enPretty(r.name) || '—')}</td>
+      <td>${r.shares ? fmt(r.shares, 0) : '—'}</td>
+      <td class="hint">${r.prev_shares ? fmt(r.prev_shares, 0) : '—'}</td>
+      <td class="${r.delta_shares > 0 ? 'up' : r.delta_shares < 0 ? 'dn' : 'flat'}">${r.delta_shares
+        ? (r.delta_shares > 0 ? '+' : '') + fmt(r.delta_shares, 0) + ' <span class="small">' + dp + '</span>'
+        : '—'}</td>
+      <td class="${r.delta_value_yi > 0 ? 'up' : r.delta_value_yi < 0 ? 'dn' : 'flat'}">${r.delta_value_yi
+        ? (r.delta_value_yi > 0 ? '+' : '') + '$' + fmt(r.delta_value_yi, 2) + ' 亿' : '—'}</td>
+    </tr>`;
+  }).join('');
+  const more = (d.total_changes || rows.length) > rows.length
+    ? `<tr><td colspan="7" class="hint" style="padding:12px">共 ${fmt(d.total_changes, 0)} 条变化，按市值变化展示前 ${rows.length} 条</td></tr>` : '';
+  box.innerHTML = `<thead><tr>
+      <th style="width:64px">动作</th>
+      <th title="美股交易代码；查不到代码的显示「—」">代码</th>
+      <th style="text-align:left" title="优先中文名，悬停看 13F 英文原名">标的</th>
+      <th title="本期申报持股数（同一发行人多行已合并）">本期股数</th>
+      <th title="上期申报持股数">上期股数</th>
+      <th title="股数变化与变化幅度（清仓时无上期基准，显示 —）">股数变化</th>
+      <th title="两期申报市值之差，已剔除股价涨跌">市值变化</th>
+    </tr></thead><tbody>${body}${more}</tbody>`;
 }
 
 /* ------- 大佬持仓：添加机构 / 录入持仓 弹窗 ------- */
@@ -2435,10 +2665,12 @@ function init() {
   };
   if ($('#trDate')) $('#trDate').value = new Date().toISOString().slice(0, 10);
   const syncTrFields = () => {
-    const isDiv = $('#trSide').value === 'DIV';
+    const v = $('#trSide').value;
+    const isDiv = v === 'DIV', isSplit = v === 'SPLIT';
     $('#trQty').disabled = isDiv;
-    $('#trPrice').disabled = isDiv;
+    $('#trPrice').disabled = isDiv || isSplit;
     $('#trAmount').disabled = !isDiv;
+    $('#trQty').placeholder = isSplit ? '送股填正数 / 并股填负数' : '分红留空';
   };
   QB.trSide = QBSelect($('#trSideHost'), {
     id: 'trSide',
@@ -2447,6 +2679,7 @@ function init() {
       { value: 'BUY', label: '买入' },
       { value: 'SELL', label: '卖出' },
       { value: 'DIV', label: '分红' },
+      { value: 'SPLIT', label: '送转股/拆股' },
       { value: 'INIT', label: '期初建仓' },
     ],
     onChange: syncTrFields,
@@ -2585,12 +2818,12 @@ function init() {
   QB.guruInv = QBSelect($('#guruSelHost'), {
     id: 'guruInvSel', value: '0',
     options: [{ value: '0', label: '全部机构' }],
-    onChange: (v) => { S.guruInv = +v; loadGuruHoldings(); },
+    onChange: (v) => { S.guruInv = +v; S.guruPage = 1; loadGuruHoldings(); loadGuruChanges(); },
   });
   QB.guruQ = QBSelect($('#guruQSelHost'), {
     id: 'guruQSel', value: '',
     options: [{ value: '', label: '最新一期' }],
-    onChange: (v) => { S.guruQuarter = v; loadGuruHoldings(); },
+    onChange: (v) => { S.guruQuarter = v; S.guruPage = 1; loadGuruHoldings(); loadGuruChanges(); },
   });
   if ($('#guruTable')) $('#guruTable').onclick = (e) => {
     const f = e.target.closest('[data-gfetch]');
@@ -2609,7 +2842,7 @@ function init() {
       return;
     }
     const tr = e.target.closest('tr[data-inv]');
-    if (tr) { S.guruInv = +tr.dataset.inv; paintGuruSegs(); loadGuruHoldings(); }
+    if (tr) { S.guruInv = +tr.dataset.inv; S.guruPage = 1; paintGuruSegs(); loadGuruHoldings(); loadGuruChanges(); }
   };
   const guruCodeClick = (e) => {
     const c = e.target.closest('[data-gcode]');

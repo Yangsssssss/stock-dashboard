@@ -686,3 +686,15 @@ html[data-theme="dark"] .k-us      { color: #67e8f9; background: rgba(103, 232, 
 .fam-cat-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
 .fam-cat-bar i { display: block; height: 100%; border-radius: 3px; opacity: .85; }
 .fam-cat b { width: 88px; text-align: right; flex: none; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* 分页条（大佬持仓明细等长表） */
+.pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 2px 0; }
+.pager:empty { display: none; }
+.pager-info { color: var(--txt-3); font-size: 12px; }
+.pager-info b { color: var(--txt-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+.pager-ctl { display: flex; align-items: center; gap: 6px; }
+.pager-ctl select {
+  padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card-2); color: var(--txt); font: inherit; font-size: 12px;
+}
+.pager-ctl .btn[disabled] { opacity: .4; cursor: not-allowed; }

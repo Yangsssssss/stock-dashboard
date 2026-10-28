@@ -497,6 +497,29 @@ public class DbService {
     }
 
     // ---------------------------------------------------------------- 统计
+    /**
+     * 清理过期的盘中快照。80 只标的 × 180 秒节流 ≈ 6400 行/天、230 万行/年，
+     * 不清理会一直膨胀（快照只服务于「最近走势」，历史价值已被 kline_daily 覆盖）。
+     * 分批删除，避免一次大 DELETE 长时间持有行锁。
+     */
+    public int purgeSnapshots(int keepDays) {
+        if (!ready) return 0;
+        String cut = LocalDateTime.now().minusDays(Math.max(1, keepDays))
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        int total = 0;
+        try {
+            for (int i = 0; i < 200; i++) {          // 上限 200 批（100 万行），防止误配置清空整表时卡住
+                int n = jdbc.update("DELETE FROM quote_snapshot WHERE snapshot_at < ? LIMIT 5000", cut);
+                total += n;
+                if (n < 5000) break;
+            }
+            if (total > 0) System.out.println("[db] 清理快照 " + total + " 行（保留 " + keepDays + " 天）");
+        } catch (Exception e) {
+            System.out.println("[db] 清理快照失败：" + e.getMessage());
+        }
+        return total;
+    }
+
     public Map<String, Object> stats() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("ready", ready);

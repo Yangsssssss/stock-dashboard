@@ -19,7 +19,7 @@ import java.util.Set;
 @Service
 public class TradeService {
 
-    public static final Set<String> SIDES = Set.of("BUY", "SELL", "DIV", "INIT");
+    public static final Set<String> SIDES = Set.of("BUY", "SELL", "DIV", "INIT", "SPLIT");
     private static final String COLS =
             "id, broker, code, name, side, trade_date, qty, price, amount, fee, currency, note, created_at";
 
@@ -73,7 +73,14 @@ public class TradeService {
         double price = U.num(body.get("price"));
         double fee = U.num(body.get("fee"));
         double amountIn = U.num(body.get("amount"));
-        if (!"DIV".equals(side) && qty <= 0) {
+        if ("SPLIT".equals(side)) {
+            // 送转股 / 拆股：只改股数，不动成本总额（成本自动摊薄），也没有现金进出
+            if (qty == 0) {
+                out.put("ok", false);
+                out.put("error", "送转股需填股数：送股 / 拆股填正数，并股填负数");
+                return out;
+            }
+        } else if (!"DIV".equals(side) && qty <= 0) {
             out.put("ok", false);
             out.put("error", "买入 / 卖出数量需大于 0");
             return out;
@@ -86,6 +93,7 @@ public class TradeService {
         double amount = switch (side) {
             case "BUY", "INIT" -> U.round(qty * price + fee, 2);
             case "SELL" -> U.round(qty * price - fee, 2);
+            case "SPLIT" -> 0;                       // 无现金流：不影响净投入与收益口径
             default -> U.round(amountIn, 2);
         };
 
@@ -219,6 +227,12 @@ public class TradeService {
                         String d = String.valueOf(r.get("trade_date"));
                         if (!LocalDate.parse(d.substring(0, 10)).isBefore(ttmStart)) p.divTtm += amount;
                     } catch (Exception ignore) { p.divTtm += amount; }
+                }
+                // 送转股 / 拆股：只调股数，成本总额原样保留 —— 每股成本因此被摊薄，
+                // 后续卖出时按新的平均成本结算已实现盈亏，等于把送股收益如实计入。
+                case "SPLIT" -> {
+                    p.qty += qty;
+                    if (p.qty < 1e-9) { p.qty = 0; p.costTotal = 0; }
                 }
                 default -> { }
             }

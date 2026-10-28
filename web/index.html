@@ -237,6 +237,19 @@
           <div class="panel-head"><h2>净值曲线</h2><span class="hint" id="perfCurveHint"></span></div>
           <div class="perf-curve"><canvas id="perfCurve"></canvas></div>
         </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>组合 vs 基准</h2>
+            <span class="hint" id="benchHint">两条曲线均为时间加权、同以 100 起步</span>
+          </div>
+          <div class="perf-curve"><canvas id="benchCurve"></canvas></div>
+          <p class="hint" style="margin:10px 0 0;line-height:1.7">
+            组合侧按<b>时间加权</b>（TWR）折算：每天用「(期末净值 − 当日入金) ÷ 期初净值」计收益，中途加仓不会稀释收益率；
+            基准取该指数的日收盘，按组合的交易日对齐（港美股休市不一致时取前一个交易日）。
+            两条线都从区间首日的 100 起画，所以「超额」= 组合涨幅 − 基准涨幅，是剔除出入金后真正可比的部分。
+            基准默认沪深300，可在 <code>application.yml</code> 的 <code>quantboard.benchmark</code> 改成 hkHSI / usSPY 等。
+          </p>
+        </div>
         <div class="two-col">
           <div class="panel">
             <div class="panel-head"><h2>区间收益</h2><span class="hint">总收益增量 · 天然剔除出入金</span></div>
@@ -253,7 +266,7 @@
       <section class="view" id="v-trades">
         <div class="page-head">
           <h1>交易记录</h1>
-          <p>买入 / 卖出 / 分红逐笔记录，持仓数量、成本、已实现盈亏与股息全部由流水推导。分红请填<b>税后到账金额</b>（A股持股满 1 年免税、1 月–1 年 10%、1 月内 20%；美股 30% 预扣）。</p>
+          <p>买入 / 卖出 / 分红 / 送转股逐笔记录，持仓数量、成本、已实现盈亏与股息全部由流水推导。分红请填<b>税后到账金额</b>（A股持股满 1 年免税、1 月–1 年 10%、1 月内 20%；美股 30% 预扣）。遇到 10 送 10、美股拆股这类<b>只变股数不变成本</b>的情况，记一笔「送转股/拆股」，填新增（并股填负数）股数即可，成本总额保持不变、每股成本自动摊薄。</p>
         </div>
         <div class="panel">
           <div class="panel-head"><h2>记一笔</h2><span class="hint">保存后持仓页自动重算</span></div>
@@ -350,6 +363,7 @@
             </div>
           </div>
           <div class="table-wrap"><table class="tbl" id="guruHoldTable"></table></div>
+          <div class="pager" id="guruPager"></div>
           <p class="hint" style="margin:10px 0 0;line-height:1.7">
             数据口径：13F 只披露<b>美股多头与期权</b>，不含空头、债券、现金及海外（含 A 股、港股）持仓，因此合计市值小于机构真实规模；
             季报须在季末后 45 天内申报，看到的「最新一期」天然滞后约一个季度。
@@ -359,6 +373,19 @@
             「标的」列优先显示中文名（首次进页面会自动补一次），悬停可看 13F 的英文原名；
             「代码」列是美股交易代码。SEC 的 13F 表单本身只申报 <code>CUSIP</code>（9 位库斯普编号）不报代码，
             本看板按 CUSIP 反查代码填入；反查不到的（未上市公司、非美股标的等）显示 <code>—</code>，看「标的」列即可。
+          </p>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>本期调仓</h2>
+            <span class="hint" id="guruChgHint">选一家机构后，对比相邻两期的新建 / 加仓 / 减仓 / 清仓</span>
+          </div>
+          <div class="table-wrap"><table class="tbl" id="guruChgTable"></table></div>
+          <p class="hint" style="margin:10px 0 0;line-height:1.7">
+            环比只在<b>同一家机构的相邻两期</b>之间比较才有意义，所以「全部机构」不显示。
+            方向按股数判断（拆股会让股数翻倍，这类异动会体现为加仓，需结合公司公告看）；
+            市值变化用两期各自申报的 13F 市值相减，已剔除股价涨跌的影响。
+            只列新建、加仓、减仓、清仓四类，持仓未变的标的用上方计数表示。
           </p>
         </div>
         <div class="panel">

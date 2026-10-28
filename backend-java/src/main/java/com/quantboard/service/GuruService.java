@@ -3,6 +3,7 @@ package com.quantboard.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quantboard.feed.HttpFetch;
+import com.quantboard.util.U;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Element;
@@ -199,6 +200,19 @@ public class GuruService {
 
     // ---------------------------------------------------------------- 持仓明细
     public Map<String, Object> holdings(long guruId, String quarter) {
+        return holdings(guruId, quarter, 1, 200);
+    }
+
+    /**
+     * 持仓明细分页。
+     *
+     * 早先这里写死 {@code LIMIT 500}：选「全部机构 / 各机构最新」时实际有 5700+ 行，
+     * 前端却只拿到市值前 500（8.7%），且没有任何"还有更多"的提示，等于静默丢数据。
+     * 现在按页取，total/pages 一并返回，由前端翻页。
+     */
+    public Map<String, Object> holdings(long guruId, String quarter, int page, int size) {
+        int sz = Math.max(20, Math.min(size, 500));
+        int pg = Math.max(1, page);
         Map<String, Object> out = new LinkedHashMap<>();
         try {
             String q = quarter == null ? "" : quarter.trim();
@@ -217,18 +231,38 @@ public class GuruService {
             }
             out.put("quarter", q);
             out.put("scope", perInvestorLatest ? "per_investor_latest" : (q.isEmpty() ? "all" : q));
+
+            StringBuilder where = new StringBuilder(" WHERE 1=1");
             List<Object> args = new ArrayList<>();
+            if (guruId > 0) { where.append(" AND h.guru_id = ?"); args.add(guruId); }
+            if (!q.isEmpty()) { where.append(" AND h.quarter = ?"); args.add(q); }
+            if (perInvestorLatest) {
+                where.append(" AND h.quarter = (SELECT MAX(h2.quarter) FROM guru_holding h2 WHERE h2.guru_id = h.guru_id)");
+            }
+
+            long total = 0;
+            double totalUsd = 0;
+            try {
+                Long c = jdbc.queryForObject("SELECT COUNT(*) FROM guru_holding h" + where, Long.class, args.toArray());
+                total = c == null ? 0 : c;
+                Double v = jdbc.queryForObject("SELECT SUM(h.value_usd) FROM guru_holding h" + where, Double.class,
+                        args.toArray());
+                totalUsd = v == null ? 0 : v;
+            } catch (Exception ignore) {
+                // 统计失败不影响翻页主流程
+            }
+            int pages = total <= 0 ? 1 : (int) ((total + sz - 1) / sz);
+            if (pg > pages) pg = pages;
+
+            List<Object> pageArgs = new ArrayList<>(args);
+            pageArgs.add(sz);
+            pageArgs.add((pg - 1) * sz);
             String sql = "SELECT h.id, h.guru_id, g.name AS guru, g.name_cn AS guru_cn, h.quarter, h.code, h.cusip, h.name, "
                     + "c.name_cn, h.shares, h.value_usd, h.pct, h.note FROM guru_holding h "
                     + "JOIN guru g ON g.id = h.guru_id "
-                    + "LEFT JOIN security_cn c ON c.code = SUBSTRING_INDEX(h.code, '~', 1) WHERE 1=1";
-            if (guruId > 0) { sql += " AND h.guru_id = ?"; args.add(guruId); }
-            if (!q.isEmpty()) { sql += " AND h.quarter = ?"; args.add(q); }
-            if (perInvestorLatest) {
-                sql += " AND h.quarter = (SELECT MAX(h2.quarter) FROM guru_holding h2 WHERE h2.guru_id = h.guru_id)";
-            }
-            sql += " ORDER BY h.value_usd DESC LIMIT 500";
-            List<Map<String, Object>> rows = jdbc.queryForList(sql, args.toArray());
+                    + "LEFT JOIN security_cn c ON c.code = SUBSTRING_INDEX(h.code, '~', 1)"
+                    + where + " ORDER BY h.value_usd DESC, h.id LIMIT ? OFFSET ?";
+            List<Map<String, Object>> rows = jdbc.queryForList(sql, pageArgs.toArray());
             for (Map<String, Object> r : rows) {
                 r.put("shares", U2(r.get("shares")));
                 r.put("value_usd", U2(r.get("value_usd")));
@@ -239,10 +273,21 @@ public class GuruService {
                 r.put("short_code", shortCode(String.valueOf(r.get("code"))));
             }
             out.put("rows", rows);
+            out.put("total", total);
+            out.put("total_yi", round2(totalUsd / 1e8));
+            out.put("page", pg);
+            out.put("size", sz);
+            out.put("pages", pages);
+            out.put("from", total == 0 ? 0 : (long) (pg - 1) * sz + 1);
+            out.put("to", Math.min((long) pg * sz, total));
             out.put("ready", true);
         } catch (Exception e) {
             out.put("ready", false);
             out.put("rows", List.of());
+            out.put("total", 0);
+            out.put("page", 1);
+            out.put("size", sz);
+            out.put("pages", 1);
         }
         return out;
     }
@@ -251,6 +296,149 @@ public class GuruService {
         return o == null ? 0 : Math.round(((Number) o).doubleValue() * 100.0) / 100.0;
     }
     private static double round2(double v) { return Math.round(v * 100.0) / 100.0; }
+
+    // ---------------------------------------------------------------- 环比调仓
+    /**
+     * 本期 vs 上期的持仓变化：新建 / 加仓 / 减仓 / 清仓 / 不变。
+     *
+     * 13F 是季度快照，单看一期只能知道"现在持有什么"；真正有信息量的是"这一季动了什么"。
+     * 按 code 汇总（同一发行人的多行、期权行各自成键），以股数变化定方向、以市值变化定权重。
+     *
+     * quarter 为空时取该机构最新一期；上一期取该机构 quarter 小于本期里最大的一个
+     * （机构停报会跳季，不能简单减 1）。
+     */
+    public Map<String, Object> changes(long guruId, String quarter) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (guruId <= 0) {
+            out.put("ready", false);
+            out.put("note", "请先选择一家机构 —— 环比只在同一家机构自己的相邻两期之间比较才有意义");
+            out.put("rows", List.of());
+            return out;
+        }
+        try {
+            String cur = quarter == null ? "" : quarter.trim();
+            if (cur.isEmpty()) {
+                List<String> qs = jdbc.queryForList("SELECT quarter FROM guru_holding WHERE guru_id = ? "
+                        + "ORDER BY quarter DESC LIMIT 1", String.class, guruId);
+                cur = qs.isEmpty() ? "" : qs.get(0);
+            }
+            if (cur.isEmpty()) {
+                out.put("ready", true);
+                out.put("note", "该机构还没有持仓数据");
+                out.put("rows", List.of());
+                return out;
+            }
+            String prev = "";
+            List<String> ps = jdbc.queryForList("SELECT quarter FROM guru_holding WHERE guru_id = ? AND quarter < ? "
+                    + "ORDER BY quarter DESC LIMIT 1", String.class, guruId, cur);
+            if (!ps.isEmpty()) prev = ps.get(0);
+
+            Map<String, double[]> curMap = snap(guruId, cur);      // code → [shares, value]
+            Map<String, double[]> prevMap = prev.isEmpty() ? Map.of() : snap(guruId, prev);
+            Map<String, String[]> meta = new HashMap<>();           // code → [name, name_cn, cusip]
+            fillMeta(guruId, cur, prev, meta);
+
+            List<Map<String, Object>> rows = new ArrayList<>();
+            java.util.Set<String> codes = new java.util.LinkedHashSet<>();
+            codes.addAll(curMap.keySet());
+            codes.addAll(prevMap.keySet());
+            int nNew = 0, nExit = 0, nAdd = 0, nTrim = 0, nHold = 0;
+            for (String code : codes) {
+                double[] c = curMap.getOrDefault(code, new double[]{0, 0});
+                double[] p = prevMap.getOrDefault(code, new double[]{0, 0});
+                double dSh = c[0] - p[0];
+                double dVal = c[1] - p[1];
+                String action;
+                if (p[0] <= 0 && c[0] > 0) { action = "NEW"; nNew++; }
+                else if (c[0] <= 0 && p[0] > 0) { action = "EXIT"; nExit++; }
+                else if (dSh > 1e-6) { action = "ADD"; nAdd++; }
+                else if (dSh < -1e-6) { action = "TRIM"; nTrim++; }
+                else { action = "HOLD"; nHold++; }
+                // 不变的行不返回：文艺复兴这类机构单期两千多行，全给前端没有信息量，
+                // 变化情况用 summary 里的计数表达即可
+                if ("HOLD".equals(action)) continue;
+
+                String[] m = meta.getOrDefault(code, new String[]{"", "", ""});
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("code", code);
+                r.put("short_code", shortCode(code));
+                r.put("name", m[0]);
+                r.put("name_cn", m[1]);
+                r.put("label", issuerLabel(m[1], m[0]));
+                r.put("action", action);
+                r.put("shares", round2(c[0]));
+                r.put("prev_shares", round2(p[0]));
+                r.put("delta_shares", round2(dSh));
+                r.put("delta_pct", p[0] > 0 ? round2(dSh / p[0] * 100) : null);
+                r.put("value_yi", round2(c[1] / 1e8));
+                r.put("prev_value_yi", round2(p[1] / 1e8));
+                r.put("delta_value_yi", round2(dVal / 1e8));
+                rows.add(r);
+            }
+            // 变化大的排前面：新建/清仓优先，其次按市值变化绝对值
+            rows.sort((a, b) -> {
+                double wa = rank(String.valueOf(a.get("action"))), wb = rank(String.valueOf(b.get("action")));
+                if (wa != wb) return Double.compare(wb, wa);
+                return Double.compare(Math.abs(U.num(b.get("delta_value_yi"))), Math.abs(U.num(a.get("delta_value_yi"))));
+            });
+            out.put("ready", true);
+            out.put("guru_id", guruId);
+            out.put("quarter", cur);
+            out.put("prev_quarter", prev);
+            out.put("comparable", !prev.isEmpty());
+            out.put("note", prev.isEmpty() ? "该机构只有一期数据，暂时无法做环比" : "");
+            out.put("summary", Map.of("new", nNew, "add", nAdd, "trim", nTrim, "exit", nExit, "hold", nHold));
+            out.put("total_changes", rows.size());
+            // 单期调仓超过 200 条的（文艺复兴这类量化机构），只返回变化最大的 200 条
+            if (rows.size() > 200) rows = new ArrayList<>(rows.subList(0, 200));
+            out.put("rows", rows);
+        } catch (Exception e) {
+            out.put("ready", false);
+            out.put("rows", List.of());
+            out.put("note", "环比计算失败：" + e.getMessage());
+        }
+        return out;
+    }
+
+    /** NEW/EXIT 先看，ADD/TRIM 次之，HOLD 最后。 */
+    private static double rank(String action) {
+        return switch (action) {
+            case "NEW" -> 4;
+            case "EXIT" -> 3;
+            case "ADD" -> 2;
+            case "TRIM" -> 1;
+            default -> 0;
+        };
+    }
+
+    /** 某机构某期的 code → [合计股数, 合计市值]，同一 code 的多行合并。 */
+    private Map<String, double[]> snap(long guruId, String quarter) {
+        Map<String, double[]> m = new LinkedHashMap<>();
+        for (Map<String, Object> r : jdbc.queryForList(
+                "SELECT code, SUM(shares) sh, SUM(value_usd) v FROM guru_holding "
+                        + "WHERE guru_id=? AND quarter=? GROUP BY code", guruId, quarter)) {
+            m.put(String.valueOf(r.get("code")),
+                    new double[]{U.num(r.get("sh")), U.num(r.get("v"))});
+        }
+        return m;
+    }
+
+    /** 名称/CUSIP 优先取本期，本期没有（清仓）取上期。 */
+    private void fillMeta(long guruId, String cur, String prev, Map<String, String[]> meta) {
+        List<String> quarters = new ArrayList<>();
+        quarters.add(cur);
+        if (prev != null && !prev.isEmpty()) quarters.add(prev);
+        for (String q : quarters) {
+            for (Map<String, Object> r : jdbc.queryForList(
+                    "SELECT h.code, h.name, h.cusip, c.name_cn FROM guru_holding h "
+                            + "LEFT JOIN security_cn c ON c.code = SUBSTRING_INDEX(h.code, '~', 1) "
+                            + "WHERE h.guru_id=? AND h.quarter=?", guruId, q)) {
+                String code = String.valueOf(r.get("code"));
+                if (meta.containsKey(code)) continue;
+                meta.put(code, new String[]{str(r.get("name")), str(r.get("name_cn")), str(r.get("cusip"))});
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- 机构 CRUD
     public Map<String, Object> addInvestor(Map<String, Object> body) {
@@ -447,6 +635,15 @@ public class GuruService {
 
     /** 拉取指定机构最新的 13F-HR 并入库。返回 {ok, quarter, rows, skipped}。 */
     public Map<String, Object> import13f(long id) {
+        return import13f(id, 0);
+    }
+
+    /**
+     * @param skip 跳过最近几份 13F-HR。0 = 最新一期（常规拉取）；1 = 上一期。
+     *             环比调仓需要相邻两期，而首次导入只会拿到最新一期，
+     *             所以要靠 skip=1 把上一期补进来，否则「本期调仓」永远是空的。
+     */
+    public Map<String, Object> import13f(long id, int skip) {
         Map<String, Object> out = new LinkedHashMap<>();
         try {
             Map<String, Object> inv = jdbc.queryForMap(
@@ -464,12 +661,19 @@ public class GuruService {
                     "https://data.sec.gov/submissions/CIK" + cik10 + ".json",
                     30, "User-Agent: " + secUa()));
             JsonNode recent = sub.path("filings").path("recent");
-            int idx = -1;
+            // 按申报时间倒序收集所有 13F-HR（跳过 13F-HR/A 修订件），支持按 skip 取更早的一期
+            List<Integer> hr = new ArrayList<>();
             JsonNode forms = recent.path("form");
             for (int i = 0; i < forms.size(); i++) {
-                if ("13F-HR".equals(forms.get(i).asText())) { idx = i; break; }
+                if ("13F-HR".equals(forms.get(i).asText())) hr.add(i);
             }
-            if (idx < 0) { out.put("ok", false); out.put("error", "SEC 上没有找到 13F-HR 申报"); return out; }
+            if (hr.isEmpty()) { out.put("ok", false); out.put("error", "SEC 上没有找到 13F-HR 申报"); return out; }
+            if (skip > 0 && skip >= hr.size()) {
+                out.put("ok", false);
+                out.put("error", "SEC 上只有 " + hr.size() + " 份 13F-HR，没有更早的一期可补");
+                return out;
+            }
+            int idx = hr.get(Math.max(0, Math.min(skip, hr.size() - 1)));
             String acc = recent.path("accessionNumber").get(idx).asText();
             String period = recent.path("reportDate").get(idx).asText();   // 如 2026-06-30
             String dir = "https://www.sec.gov/Archives/edgar/data/"
@@ -525,6 +729,17 @@ public class GuruService {
             Map<String, double[]> agg = new LinkedHashMap<>();   // 最终代码 → {shares, valueUsd}
             Map<String, String[]> meta = new HashMap<>();        // 最终代码 → {name, cusip, putCall}
             Map<String, String> codeCache = new HashMap<>();     // 发行人|CUSIP → 代码（大机构多管理人重复申报，避免反复归一化）
+            // 本库其它期已经把这个 CUSIP 认成了 ticker → 直接沿用。
+            // 否则同一笔持仓在两个季度会落成两种代码（Q1 裸 CUSIP、Q2 usBAC），
+            // 环比就会同时出现一条「新建」和一条「清仓」，看着像换仓，其实是代码没对齐。
+            Map<String, String> sameCusip = new HashMap<>();
+            try {
+                for (Map<String, Object> r : jdbc.queryForList(
+                        "SELECT cusip, MAX(code) AS c FROM guru_holding WHERE cusip<>'' GROUP BY cusip")) {
+                    String c = String.valueOf(r.get("c"));
+                    if (c.startsWith("us")) sameCusip.put(String.valueOf(r.get("cusip")), c);
+                }
+            } catch (Exception ignore) { }
             // 从 Document 起递归，根元素本身就是 infoTable 的极简 filing 也能命中
             collectInfoTables(doc, row -> {
                 String name = child(row, "nameOfIssuer");
@@ -537,7 +752,12 @@ public class GuruService {
                 if (name.isEmpty() || valueUsd <= 0) return;
                 // 按最终代码聚合：同一发行人的不同 CUSIP（股份类别 / 多管理人分别申报）
                 // 会映射到同一个 ticker，若不先合并，入库时会被唯一键覆盖而丢仓
-                String key = codeCache.computeIfAbsent(name + "|" + cusip, k -> holdingCode(name, cusip));
+                String key = codeCache.computeIfAbsent(name + "|" + cusip, k -> {
+                    String mapped = holdingCode(name, cusip);
+                    // 名称匹配不出来（同一发行人在不同季报里写法不一）时，沿用已有期次的代码
+                    if (!mapped.startsWith("us") && sameCusip.containsKey(cusip)) return sameCusip.get(cusip);
+                    return mapped;
+                });
                 if (!putCall.isEmpty()) key = key + "~" + putCall;   // 期权单独一行
                 agg.computeIfAbsent(key, k -> new double[2]);
                 agg.get(key)[0] += shares;
