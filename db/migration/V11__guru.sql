@@ -1,0 +1,28 @@
+-- 大佬持仓：跟踪 13F 机构与主权基金的美股持仓
+CREATE TABLE IF NOT EXISTS guru (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(64) NOT NULL COMMENT '机构名',
+  gtype VARCHAR(16) NOT NULL DEFAULT '13f' COMMENT '13f / sovereign',
+  cik  VARCHAR(12) NOT NULL DEFAULT '' COMMENT 'SEC CIK（10 位补零），13F 自动拉取用',
+  note VARCHAR(255) NOT NULL DEFAULT '',
+  sort_no INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='跟踪的投资机构（13F / 主权基金）';
+
+CREATE TABLE IF NOT EXISTS guru_holding (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  guru_id BIGINT NOT NULL,
+  quarter VARCHAR(8) NOT NULL COMMENT '报告期，如 2026Q2',
+  code VARCHAR(24) NOT NULL COMMENT 'us+Ticker，未匹配到则存 CUSIP',
+  cusip VARCHAR(12) NOT NULL DEFAULT '',
+  name VARCHAR(96) NOT NULL DEFAULT '' COMMENT '发行人名称',
+  shares DECIMAL(24,4) NOT NULL DEFAULT 0 COMMENT '持股数（13F 同发行人多行已聚合）',
+  value_usd DECIMAL(24,2) NOT NULL DEFAULT 0 COMMENT '市值（美元；13F 报千美元 ×1000）',
+  pct DECIMAL(8,4) NOT NULL DEFAULT 0 COMMENT '占该机构组合 %（写入后自动重算）',
+  note VARCHAR(255) NOT NULL DEFAULT '',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_gq (guru_id, quarter, code),
+  KEY idx_guru (guru_id, quarter),
+  KEY idx_code (code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='机构持仓明细（按报告期）';

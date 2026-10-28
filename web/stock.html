@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>标的详情 · QuantBoard</title>
 <link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="dialog.css" />
 <link rel="stylesheet" href="stock.css" />
 </head>
 <body class="st-body">
@@ -21,6 +22,7 @@
   <div class="st-quote">
     <div class="st-last" id="stLast">—</div>
     <div class="st-chg" id="stChg">—</div>
+    <div class="st-ext" id="stExt" style="display:none"></div>
   </div>
   <div class="st-acts">
     <button class="btn ghost" id="stStar" title="加入 / 移出自选">★ 自选</button>
@@ -33,8 +35,13 @@
   <section class="st-col-main">
     <div class="panel">
       <div class="chart-tabs" id="stTabs">
-        <button class="ct active" data-days="120">日线 120</button>
-        <button class="ct" data-days="250">日线 250</button>
+        <button class="ct" data-period="trend" data-days="0">盘中分时</button>
+        <button class="ct active" data-period="day" data-days="120">日线 120</button>
+        <button class="ct" data-period="day" data-days="250">日线 250</button>
+        <button class="ct" data-period="day" data-days="99999" title="从上市日起全部日线">上市至今</button>
+        <button class="ct" data-period="month" data-days="120">月线</button>
+        <button class="ct" data-period="quarter" data-days="48">季线</button>
+        <button class="ct" data-period="year" data-days="999">年线</button>
         <button class="ct" data-tab="fin" id="stTabFin" title="季度财报（仅个股）">财报</button>
       </div>
       <div id="klineWrap">
@@ -44,6 +51,7 @@
           <span><i style="background:#5b8def"></i>MA10</span>
           <span><i style="background:#b26cf0"></i>MA20</span>
           <span><i style="background:#8b93a3"></i>MA60</span>
+          <span class="small" id="kAdj" style="margin-left:auto;opacity:.7"></span>
         </div>
       </div>
       <div id="finPanel" style="display:none"></div>
@@ -87,6 +95,7 @@
 </main>
 
 <script src="common.js"></script>
+<script src="dialog.js"></script>
 <script src="stock.js"></script>
 </body>
 </html>

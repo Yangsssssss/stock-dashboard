@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>多市场股票看板 · A股 / 港股 / 美股 / ETF / 基金</title>
 <link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="dialog.css" />
 </head>
 <body>
 <div class="app">
@@ -24,10 +25,17 @@
       <a class="nav-item" data-view="fund"><span class="ico">基</span>基金</a>
       <a class="nav-item" data-view="watch"><span class="ico">★</span>自选股</a>
       <div class="nav-group">资产</div>
+      <a class="nav-item" data-view="family"><span class="ico">⌂</span>家庭总览</a>
       <a class="nav-item" data-view="port"><span class="ico">▦</span>持仓</a>
+      <a class="nav-item" data-view="perf"><span class="ico">↗</span>收益分析</a>
+      <a class="nav-item" data-view="trades"><span class="ico">≡</span>交易记录</a>
+      <div class="nav-group">资讯</div>
+      <a class="nav-item" data-view="news"><span class="ico">✉</span>消息中心</a>
+      <a class="nav-item" data-view="guru"><span class="ico">◈</span>大佬持仓</a>
       <div class="nav-group">分析</div>
       <a class="nav-item" data-view="signals"><span class="ico">▲</span>技术信号榜</a>
       <a class="nav-item" data-view="corr"><span class="ico">⊞</span>相关性矩阵</a>
+      <a class="nav-item" data-view="ai"><span class="ico">✦</span>AI 持仓分析</a>
     </nav>
 
     <div class="side-foot">
@@ -53,12 +61,13 @@
       <section class="view active" id="v-overview">
         <div class="page-head">
           <h1>市场总览</h1>
+          <p id="clockLine" class="clock-line"></p>
           <p id="headline">正在拉取实时行情…</p>
         </div>
         <div class="mkt-grid" id="mktCards"></div>
 
         <div class="panel">
-          <div class="panel-head"><h2>核心指数</h2><span class="hint">45 日走势 · 点击查看详情</span></div>
+          <div class="panel-head"><h2>核心指数</h2><span class="hint">盘中分时 · 点击查看详情</span></div>
           <div class="idx-grid" id="idxGrid"></div>
         </div>
 
@@ -132,7 +141,6 @@
           <div class="panel-head">
             <h2>我的自选</h2>
             <span class="hint" id="watchHint"></span>
-            <button class="btn ghost danger" id="watchBatchDel" style="display:none">移除选中</button>
           </div>
           <div class="table-wrap"><table class="tbl" id="watchTable"></table></div>
         </div>
@@ -142,8 +150,9 @@
       <section class="view" id="v-port">
         <div class="page-head">
           <h1>持仓</h1>
-          <p id="portDesc">按券商分组记录数量与成本，行情与盈亏实时计算。数据存 MySQL holding 表。</p>
+          <p id="portDesc">按券商分组记录流水，持仓数量与摊薄成本由流水重放推导，行情与盈亏实时计算。数据存 MySQL trade 表。</p>
           <div class="page-actions">
+            <button class="btn ghost" id="portAiBtn">✨ AI 分析</button>
             <button class="btn ghost" id="portOcrBtn">📷 图片识别</button>
             <button class="btn" id="portAddBtn">＋ 手动添加</button>
           </div>
@@ -152,7 +161,148 @@
         <div id="portBrokers"></div>
       </section>
 
+      <!-- 家庭总览 -->
+      <section class="view" id="v-family">
+        <div class="page-head">
+          <h1>家庭总览</h1>
+          <p id="famDesc">证券市值由持仓流水实时推导（折人民币），非证券科目在下方台账手动维护；负债单列，净值 = 总资产 − 总负债。</p>
+          <div class="page-actions">
+            <button class="btn ghost" id="famMembersBtn">成员管理</button>
+            <button class="btn" id="famFlowBtn">＋ 记收支</button>
+            <button class="btn" id="famAddBtn">＋ 记一笔</button>
+          </div>
+        </div>
+        <div class="stat-row" id="famStats"></div>
+        <div class="fam-seg-wrap"><div class="seg" id="famMemberSeg"></div></div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head"><h2>大类分布</h2><span class="hint" id="famPieHint"></span></div>
+            <div class="fam-pie-wrap">
+              <canvas id="famPie"></canvas>
+              <div id="famLegend"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>目标配置偏离</h2>
+              <button class="btn ghost" id="famTargetSave">保存目标</button></div>
+            <div id="famTargets"></div>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head"><h2>月度收支</h2><span class="hint">近 12 个月 · 折人民币 · 左收右支</span></div>
+            <div class="fam-chart"><canvas id="famMonthly"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>本月分类构成</h2><span class="hint" id="famCatHint"></span></div>
+            <div id="famCats"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>家庭净值曲线</h2><span class="hint">科目余额 + 证券市值 − 负债 · 每日快照（当日取最新值）</span></div>
+          <div class="perf-curve"><canvas id="famNav"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>成员</h2><span class="hint">台账余额为各成员名下非证券科目 · 收支为本月（折人民币）</span></div>
+          <div class="table-wrap"><table class="tbl" id="famMembersTable"></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>收支台账</h2><span class="hint">现金流记录，不并入资产净值口径 · 最近 60 笔 · 点行可编辑</span>
+            <button class="btn" id="famFlowAddBtn">＋ 新增收支</button></div>
+          <div class="table-wrap"><table class="tbl" id="famFlowTable"></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>非证券科目台账</h2><span class="hint">证券不在这里重复记账 · 金额按月手动更新</span></div>
+          <div class="table-wrap"><table class="tbl" id="famTable"></table></div>
+        </div>
+      </section>
+
+      <!-- 收益分析 -->
+      <section class="view" id="v-perf">
+        <div class="page-head">
+          <h1>收益分析</h1>
+          <p>收益口径的唯一出处：总收益 = 市值 − 净投入 + 股息。净投入按流水逐笔累计（买入含费 − 卖出净额），
+            所以追加资金或赎回不会让收益跳变。历史曲线从建仓日开始（之前的日期没有这个组合），快照缺失时用 K 线回溯估算，标「估」。</p>
+          <div class="page-actions">
+            <div class="seg" id="perfSeg">
+              <button class="seg-btn" data-d="90">3 月</button>
+              <button class="seg-btn active" data-d="180">6 月</button>
+              <button class="seg-btn" data-d="365">1 年</button>
+              <button class="seg-btn" data-d="730">2 年</button>
+            </div>
+          </div>
+        </div>
+        <div class="stat-row" id="perfStats"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>净值曲线</h2><span class="hint" id="perfCurveHint"></span></div>
+          <div class="perf-curve"><canvas id="perfCurve"></canvas></div>
+        </div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head"><h2>区间收益</h2><span class="hint">总收益增量 · 天然剔除出入金</span></div>
+            <div class="table-wrap"><table class="tbl" id="perfIntervals"></table></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>标的贡献</h2><span class="hint">浮盈 + 已实现 + 股息，折人民币</span></div>
+            <div class="table-wrap"><table class="tbl" id="perfContrib"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 交易记录 -->
+      <section class="view" id="v-trades">
+        <div class="page-head">
+          <h1>交易记录</h1>
+          <p>买入 / 卖出 / 分红逐笔记录，持仓数量、成本、已实现盈亏与股息全部由流水推导。分红请填<b>税后到账金额</b>（A股持股满 1 年免税、1 月–1 年 10%、1 月内 20%；美股 30% 预扣）。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>记一笔</h2><span class="hint">保存后持仓页自动重算</span></div>
+          <div class="tr-form">
+            <div class="qbsel-field">类型<div id="trSideHost"></div></div>
+            <label>券商 / 账户<input id="trBroker" list="brokerList" type="text" placeholder="如 富途" /></label>
+            <label>代码<input id="trCode" type="text" placeholder="600036 / 00988 / NVDA" /></label>
+            <label>日期<input id="trDate" type="date" /></label>
+            <label>数量<input id="trQty" type="number" step="any" min="0" placeholder="分红留空" /></label>
+            <label>单价<input id="trPrice" type="number" step="any" min="0" placeholder="分红留空" /></label>
+            <label>费用<input id="trFee" type="number" step="any" min="0" placeholder="佣金+税" /></label>
+            <label>分红金额<input id="trAmount" type="number" step="any" min="0" placeholder="税后到账" /></label>
+            <button class="btn" id="trSave">保存</button>
+          </div>
+          <div class="pa-err" id="trErr"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>流水明细</h2><span class="hint" id="trHint">分红由系统每日自动核对入账（税前推算），金额与到账不符时可直接改那笔</span></div>
+          <div class="table-wrap"><table class="tbl" id="trTable"></table></div>
+        </div>
+      </section>
+
       <!-- 相关性 -->
+      <section class="view" id="v-news">
+        <div class="page-head">
+          <h1>消息中心</h1>
+          <p>政策与公司要闻实时聚合：政策类按 <b>国务院 / 证监会 / 央行 / 财政部</b> 等口径识别，企业类来自持仓与自选标的的新闻与公告。点标题跳原文。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-head news-head">
+            <div class="news-tabs" id="newsTabs">
+              <button class="nws-tab active" data-kind="all">全部</button>
+              <button class="nws-tab" data-kind="policy">政策</button>
+              <button class="nws-tab" data-kind="company">企业</button>
+              <button class="nws-tab" data-kind="market">市场</button>
+              <button class="nws-tab" data-kind="us">美国</button>
+              <button class="nws-tab" data-kind="global">国际</button>
+            </div>
+            <div class="news-head-right">
+              <span class="hint" id="newsHint">加载中…</span>
+              <button class="btn ghost" id="newsRefresh">刷新</button>
+            </div>
+          </div>
+          <div class="news-list" id="newsList">
+            <div class="hint" style="padding:16px 2px">正在拉取…</div>
+          </div>
+        </div>
+      </section>
+
       <section class="view" id="v-corr">
         <div class="page-head">
           <h1>跨市场相关性</h1>
@@ -167,6 +317,78 @@
             <div class="panel-head"><h2>解读</h2></div>
             <div class="readout" id="corrRead"></div>
           </div>
+        </div>
+      </section>
+
+      <!-- 大佬持仓 -->
+      <section class="view" id="v-guru">
+        <div class="page-head">
+          <h1>大佬持仓</h1>
+          <p>跟踪知名投资人与主权基金的美股持仓。机构以中文名为主行，副行标注掌门人与 SEC 上的英文原名；持仓标的同样优先显示中文名，鼠标悬停可看英文原名与代码。
+            填了 SEC 编号（CIK）的机构点「拉取」即可从 SEC EDGAR 同步最新 13F 季报（13F 允许滞后约一个季度，属正常；
+            挪威央行、穆巴达拉这类主权基金同样在 SEC 申报，一样能拉）；不公开申报的机构手动「录入持仓」。点机构行可只看它的明细。</p>
+          <div class="page-actions">
+            <button class="btn" id="guruAddBtn">＋ 添加机构</button>
+          </div>
+        </div>
+        <div class="stat-row" id="guruStats"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>机构列表</h2><span class="hint" id="guruHint"></span></div>
+          <div class="table-wrap"><table class="tbl" id="guruTable"></table></div>
+          <p class="hint" style="margin:10px 0 0;line-height:1.7">
+            「掌门人」一行是机构的掌舵人与英文原名，方便对号入座。「SEC 编号」即 CIK，是机构在 SEC EDGAR 的档案号，拉取 13F 时按它定位申报文件。
+            尚未同步过的机构显示「未拉取」，点右侧「拉取」即可。
+          </p>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2 style="white-space:nowrap">持仓明细</h2>
+            <div class="news-head-right">
+              <div id="guruSelHost" class="guru-filter" style="width:172px"></div>
+              <div id="guruQSelHost" class="guru-filter" style="width:112px"></div>
+              <button class="btn ghost" id="guruHoldAddBtn" style="white-space:nowrap">＋ 录入持仓</button>
+            </div>
+          </div>
+          <div class="table-wrap"><table class="tbl" id="guruHoldTable"></table></div>
+          <p class="hint" style="margin:10px 0 0;line-height:1.7">
+            数据口径：13F 只披露<b>美股多头与期权</b>，不含空头、债券、现金及海外（含 A 股、港股）持仓，因此合计市值小于机构真实规模；
+            季报须在季末后 45 天内申报，看到的「最新一期」天然滞后约一个季度。
+            「占组合」为该标的占这家机构本期已披露持仓市值的比重。
+            「报告期」列是该行数据所属季度；报告期选「各机构最新」时，每家机构各取自己最新的一期
+            （有人先申报下一季度也不用担心别家消失），所以同一张表里报告期可能不同。
+            「标的」列优先显示中文名（首次进页面会自动补一次），悬停可看 13F 的英文原名；
+            「代码」列是美股交易代码。SEC 的 13F 表单本身只申报 <code>CUSIP</code>（9 位库斯普编号）不报代码，
+            本看板按 CUSIP 反查代码填入；反查不到的（未上市公司、非美股标的等）显示 <code>—</code>，看「标的」列即可。
+          </p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>共识榜</h2><span class="hint">被 ≥2 家跟踪机构同时持有的标的 · 按持有机构数排序，同数再按合计市值</span></div>
+          <div class="table-wrap"><table class="tbl" id="guruConsTable"></table></div>
+          <p class="hint" style="margin:10px 0 0;line-height:1.7">
+            多家机构同时重仓，通常说明该标的在基本面或估值上获得较广泛认同；但各机构报告期可能不同步（尤其停报或转 13F-NT 的机构），
+            横向比较时先看「持有机构」列的报告期是否一致。
+          </p>
+        </div>
+      </section>
+
+      <!-- AI 持仓分析 -->
+      <section class="view" id="v-ai">
+        <div class="page-head">
+          <h1>AI 持仓分析</h1>
+          <p>把当前持仓快照（账户、数量、现价、市值、占比、盈亏、评分、股息率，统一折人民币）
+            交给 DeepSeek 生成结构化点评：一句话总评 → 组合结构 → 重点持仓点评 → 风险点 → 可操作建议。
+            分析只基于快照数据，不含任何实时新闻或外部信息。</p>
+          <div class="page-actions">
+            <button class="btn" id="aiRefreshBtn">↻ 重新分析</button>
+          </div>
+        </div>
+        <div class="stat-row" id="aiStats"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>分析报告</h2>
+            <span class="hint" id="aiHint"></span>
+          </div>
+          <div class="ai-body" id="aiBody"></div>
         </div>
       </section>
     </div>
@@ -186,11 +408,6 @@
     <input id="mgInput" type="text" placeholder="搜索名称 / 拼音 / 代码，如 茅台、Tencent、sh600036" autocomplete="off" />
   </div>
   <div class="mg-results" id="mgResults"><div class="mg-empty">输入关键词搜索全球标的，点击即加入看板</div></div>
-  <div class="mg-sec">
-    <div class="mg-sec-head"><b>我的自定义标的</b><span class="hint" id="mgCustomHint"></span>
-      <button class="btn ghost danger" id="mgBatchDel" style="display:none">移出选中</button></div>
-    <div id="mgCustomList"></div>
-  </div>
 </div>
 
 <!-- 移出确认 -->
@@ -205,25 +422,30 @@
   </div>
 </div>
 
-<!-- 持仓：手动添加 -->
+<!-- 持仓：手动添加（买入 / 卖出） -->
 <div class="mask" id="paMask"></div>
 <div class="modal pa-modal" id="paModal">
   <div class="modal-head">
-    <h3>添加持仓</h3>
+    <h3>添加交易</h3>
     <button class="btn ghost" id="paClose">✕</button>
   </div>
   <div class="pa-form">
+    <div class="pa-side">
+      <button type="button" class="side-btn buy active" id="paSideBuy">买入 / 建仓</button>
+      <button type="button" class="side-btn sell" id="paSideSell">卖出</button>
+    </div>
     <label>券商 / 账户<input id="paBroker" list="brokerList" type="text" placeholder="如 中信证券、富途、长桥" /></label>
     <datalist id="brokerList"></datalist>
     <label>代码<input id="paCode" type="text" placeholder="600036 / 00988 / NVDA" /></label>
     <label>数量<input id="paQty" type="number" min="0" step="any" placeholder="100" /></label>
-    <label>成本价<input id="paCost" type="number" min="0" step="any" placeholder="320.50" /></label>
+    <label>成交价<input id="paCost" type="number" min="0" step="any" placeholder="320.50" /></label>
+    <label>交易日期<input id="paDate" type="date" /></label>
     <div class="pa-err" id="paErr"></div>
     <div class="pa-btns">
       <button class="btn ghost" id="paCancel">取消</button>
       <button class="btn" id="paSave">保存</button>
     </div>
-    <div class="small">保存后自动从行情拉取名称与币种；同券商同代码为覆盖更新。</div>
+    <div class="small">买入：新标的按建仓入库，已有持仓则追加一笔买入；卖出：按成交价结转已实现盈亏。保存后自动从行情拉取名称与币种。</div>
   </div>
 </div>
 
@@ -252,7 +474,127 @@
   </div>
 </div>
 
+<!-- 家庭：记一笔（非证券科目） -->
+<div class="mask" id="fmMask"></div>
+<div class="modal pa-modal" id="fmModal">
+  <div class="modal-head">
+    <h3>记一笔科目</h3>
+    <button class="btn ghost" id="fmClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <div class="qbsel-field">类型<div id="fmTypeHost"></div></div>
+    <div class="qbsel-field">成员<div id="fmMemberHost"></div></div>
+    <label>名称<input id="fmName" type="text" placeholder="如 招商银行活期 / 房贷" /></label>
+    <label>金额<input id="fmAmount" type="number" min="0" step="any" placeholder="负债也记正数" /></label>
+    <div class="qbsel-field">币种<div id="fmCurrencyHost"></div></div>
+    <label>备注<input id="fmNote" type="text" placeholder="选填" /></label>
+    <div class="pa-err" id="fmErr"></div>
+    <div class="pa-btns">
+      <button class="btn ghost" id="fmCancel">取消</button>
+      <button class="btn" id="fmSave">保存</button>
+    </div>
+    <div class="small">只记录非证券科目；证券市值由持仓页流水实时推导，不在这里填。余额按月更新即可。</div>
+  </div>
+</div>
+
+<!-- 家庭：记收支 -->
+<div class="mask" id="ffMask"></div>
+<div class="modal pa-modal" id="ffModal">
+  <div class="modal-head">
+    <h3>记收支</h3>
+    <button class="btn ghost" id="ffClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <div class="qbsel-field">类型<div id="ffTypeHost"></div></div>
+    <div class="qbsel-field">成员<div id="ffMemberHost"></div></div>
+    <label>分类<input id="ffCategory" list="ffCatList" type="text" placeholder="如 工资 / 餐饮 / 房贷还款" /></label>
+    <datalist id="ffCatList">
+      <option value="工资"></option><option value="奖金"></option><option value="理财收益"></option>
+      <option value="租金收入"></option><option value="分红利息"></option><option value="其他收入"></option>
+      <option value="餐饮"></option><option value="日用"></option><option value="房贷还款"></option>
+      <option value="房租"></option><option value="交通"></option><option value="教育"></option>
+      <option value="医疗"></option><option value="保险"></option><option value="旅行"></option>
+      <option value="人情"></option><option value="其他支出"></option><option value="拆迁补偿款"></option>
+    </datalist>
+    <label>金额<input id="ffAmount" type="number" min="0" step="any" placeholder="正数" /></label>
+    <div class="qbsel-field">币种<div id="ffCurrencyHost"></div></div>
+    <label>日期<input id="ffDate" type="date" /></label>
+    <label>备注<input id="ffNote" type="text" placeholder="选填" /></label>
+    <div class="pa-err" id="ffErr"></div>
+    <div class="pa-btns">
+      <button class="btn ghost" id="ffCancel">取消</button>
+      <button class="btn" id="ffSave">保存</button>
+    </div>
+    <div class="small">收支是现金流台账，只影响月度结余统计，不改变资产净值（净值 = 科目余额 + 证券市值 − 负债）。</div>
+  </div>
+</div>
+
+<!-- 家庭：成员管理 -->
+<div class="mask" id="fmbMask"></div>
+<div class="modal pa-modal" id="fmbModal">
+  <div class="modal-head">
+    <h3>成员管理</h3>
+    <button class="btn ghost" id="fmbClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <div id="fmbList"></div>
+    <div class="fmb-add">
+      <input id="fmbName" type="text" placeholder="新成员名" />
+      <button class="btn" id="fmbAdd">添加</button>
+    </div>
+    <div class="small">删除成员时，名下科目与收支自动归入「共有」，不会丢数据。</div>
+  </div>
+</div>
+
+<!-- 大佬持仓：添加机构 -->
+<div class="mask" id="giMask"></div>
+<div class="modal pa-modal" id="giModal">
+  <div class="modal-head">
+    <h3>添加机构</h3>
+    <button class="btn ghost" id="giClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <div class="qbsel-field">类型<div id="giTypeHost"></div></div>
+    <label>机构名称（英文原名）<input id="giName" type="text" placeholder="如 Hillhouse Capital，与 SEC EDGAR 上的名称一致" /></label>
+    <label>机构中文名<input id="giNameCn" type="text" placeholder="选填，如 高瓴资本；列表里优先显示中文名" /></label>
+    <label>SEC 编号（CIK）<input id="giCik" type="text" placeholder="纯数字，如 1067983；在 EDGAR 搜公司名可见" /></label>
+    <label>掌门人 / 备注<input id="giNote" type="text" placeholder="选填，如 张磊；显示在中文名下方" /></label>
+    <div class="pa-err" id="giErr"></div>
+    <div class="pa-btns">
+      <button class="btn ghost" id="giCancel">取消</button>
+      <button class="btn" id="giSave">保存</button>
+    </div>
+    <div class="small">填了 CIK 就能一键从 SEC 同步 13F —— 主权基金（挪威央行、穆巴达拉等）同样向 SEC 申报，一样能拉；
+      只有不公开申报的机构（如部分家族办公室、国内私募）才需要手动「录入持仓」。CIK 可留空，之后随时补填。</div>
+  </div>
+</div>
+
+<!-- 大佬持仓：录入持仓 -->
+<div class="mask" id="ghMask"></div>
+<div class="modal pa-modal" id="ghModal">
+  <div class="modal-head">
+    <h3>录入持仓</h3>
+    <button class="btn ghost" id="ghClose">✕</button>
+  </div>
+  <div class="pa-form">
+    <div class="qbsel-field">机构<div id="ghGuruHost"></div></div>
+    <label>报告期<input id="ghQuarter" type="text" placeholder="格式 2026Q2，即 2026 年二季度" /></label>
+    <label>代码<input id="ghCode" type="text" placeholder="美股 Ticker，如 AAPL（可带 us 前缀）" /></label>
+    <label>名称<input id="ghName" type="text" placeholder="选填，默认同代码" /></label>
+    <label>持股数<input id="ghShares" type="number" min="0" step="any" placeholder="选填，股" /></label>
+    <label>市值（美元）<input id="ghValue" type="number" min="0" step="any" placeholder="必填，单位：美元" /></label>
+    <label>备注<input id="ghNote" type="text" placeholder="选填，如 看跌期权 Put / 新建仓" /></label>
+    <div class="pa-err" id="ghErr"></div>
+    <div class="pa-btns">
+      <button class="btn ghost" id="ghCancel">取消</button>
+      <button class="btn" id="ghSave">保存</button>
+    </div>
+    <div class="small">同一机构 + 同一报告期 + 同一代码重复保存会覆盖。占组合比例按该机构该期总市值自动算。</div>
+  </div>
+</div>
+
 <script src="common.js"></script>
+<script src="dialog.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

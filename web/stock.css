@@ -20,6 +20,10 @@
 .st-quote { margin-left: auto; text-align: right; }
 .st-last { font-size: 24px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
 .st-chg { font-size: 12px; font-weight: 600; margin-top: 1px; }
+.st-ext { display: flex; gap: 6px; align-items: baseline; justify-content: flex-end; margin-top: 3px; font-size: 12px; }
+.ext-chip { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.ext-ts { font-size: 10.5px; color: var(--txt-3); }
 .st-acts { display: flex; gap: 6px; align-items: center; }
 #stStar.on { color: var(--warn); border-color: var(--warn); }
 

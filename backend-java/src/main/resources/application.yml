@@ -30,3 +30,7 @@ quantboard:
   migration-dir: ${user.dir}/db/migration
   fx-hkd: 0.92      # 近似汇率：约合人民币换算用（静态值，仅供量级参考）
   fx-usd: 7.15
+  ai:               # 大模型持仓分析（DeepSeek 兼容 OpenAI 接口）
+    base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: ${DEEPSEEK_MODEL:deepseek-chat}

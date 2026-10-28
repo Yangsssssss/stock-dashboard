@@ -113,6 +113,7 @@ main { overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: colu
   position: sticky; top: 0; z-index: 20; background: var(--card);
   border-bottom: 1px solid var(--line); padding: 0 20px;
 }
+.ticker-wrap.hide { display: none; }
 .ticker { display: flex; gap: 22px; overflow-x: auto; padding: 9px 0; scrollbar-width: none; }
 .ticker::-webkit-scrollbar { display: none; }
 .tk { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; cursor: pointer; }
@@ -129,6 +130,8 @@ main { overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: colu
 .page-head { margin-bottom: 14px; }
 .page-head h1 { font-size: 19px; }
 .page-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--txt-3); max-width: 920px; }
+.clock-line { font-variant-numeric: tabular-nums; }
+.clock-line b { color: var(--txt-2); font-weight: 600; }
 
 /* ============ 市场卡 ============ */
 .mkt-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
@@ -205,6 +208,7 @@ main { overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: colu
 .chip.neutral { color: var(--txt-2); background: var(--line-soft); }
 .chip.weak { color: var(--dn); background: var(--dn-soft); }
 .chip.bad { color: #fff; background: var(--dn); }
+.chip.hold { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-soft); }
 .tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--line-soft); color: var(--txt-3); }
 .grp { font-size: 10px; padding: 1px 5px; border-radius: 3px; background: var(--accent-soft); color: var(--accent); }
 
@@ -309,12 +313,32 @@ tr:hover .row-del { opacity: .75; }
 .score-cell { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .score-track { width: 40px; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
 .score-track i { display: block; height: 100%; }
+.mk-score { min-width: 22px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
 .spark-canvas { width: 74px; height: 24px; display: block; }
+
+/* 成分列表：列宽由 colgroup 写死（table-layout: fixed），表头与数据逐列对齐；
+   自动列宽会把「分时」这种窄内容列撑成一大块，表头右对齐、走势图贴左，看着就散了 */
+#mktTable { table-layout: fixed; }
+#mktTable th, #mktTable td { overflow: hidden; }
+#mktTable th.ta-c, #mktTable td.ta-c { text-align: center; }
+#mktTable td.ta-c .spark-canvas { margin: 0 auto; }
+#mktTable .cell-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 分段控件 */
 .seg { display: flex; gap: 2px; background: var(--line-soft); padding: 2px; border-radius: 6px; }
 .seg-btn { border: none; background: transparent; font-size: 11px; color: var(--txt-3); padding: 3px 9px; border-radius: 5px; }
 .seg-btn.active { background: var(--card); color: var(--txt); box-shadow: 0 1px 2px rgba(0,0,0,.06); font-weight: 600; }
+
+/* 大佬持仓筛选：面板头里的紧凑下拉（复用 QBSelect） */
+.guru-filter .qbsel-btn { padding: 4px 9px; font-size: 12px; border-radius: 7px; }
+.guru-filter .qbsel-menu { min-width: 100%; width: max-content; max-width: 260px; }
+.guru-filter .qbsel-opt { white-space: nowrap; }
+
+/* 大佬持仓机构列：中文名作主行，掌门人 / 英文原名作副行 */
+.guru-sub {
+  display: block; margin-top: 1px; font-size: 11px; line-height: 1.35; color: var(--txt-3);
+  max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* 统计条 */
 .stat-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -434,6 +458,41 @@ tr:hover .row-del { opacity: .75; }
 }
 .pa-form input:focus { border-color: var(--accent); }
 .pa-err { font-size: 12px; color: var(--dn); min-height: 16px; }
+
+/* 收益归因：总收益占比条 */
+.attr-bar {
+  display: flex; height: 5px; border-radius: 3px; overflow: hidden;
+  background: var(--line-soft); margin: 7px 0 4px;
+}
+.attr-bar i { display: block; height: 100%; }
+.attr-bar i.up { background: #e24b4a; }
+.attr-bar i.realized { background: #378add; }
+.attr-bar i.div { background: #1d9e75; }
+
+/* 收益分析：净值曲线 */
+.perf-curve { padding: 10px 14px 6px; }
+.perf-curve canvas { width: 100%; height: 250px; display: block; }
+
+/* 收益分析：贡献条形 */
+.mini-bar { width: 60px; height: 5px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.mini-bar i { display: block; height: 100%; }
+.mini-bar.up i { background: #e24b4a; }
+.mini-bar.dn i { background: #1d9e75; }
+tr.closed-row td { opacity: .6; }
+
+/* 交易记录表单 */
+.tr-form {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 10px; align-items: end; padding: 2px 0 8px;
+}
+.tr-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--txt-3); }
+.tr-form input, .tr-form select {
+  padding: 7px 10px; font-size: 13px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card-2); color: var(--txt); outline: none; width: 100%; box-sizing: border-box;
+}
+.tr-form input:focus, .tr-form select:focus { border-color: var(--accent); }
+.tr-form .btn { height: 34px; }
+.closed-row td { opacity: .72; }
 .pa-btns { display: flex; gap: 10px; justify-content: flex-end; }
 .pa-btns .btn { min-width: 88px; }
 
@@ -465,3 +524,165 @@ tr:hover .row-del { opacity: .75; }
 
 /* 财报标签面板 */
 #finPanel { margin-top: 6px; min-height: 120px; }
+
+/* ============ AI 持仓分析 ============ */
+.ai-panel .page-actions { gap: 6px; }
+.ai-body { padding: 14px 16px 16px; }
+.ai-body h4 {
+  margin: 16px 0 6px; font-size: 13.5px; color: var(--txt);
+  padding-left: 8px; border-left: 3px solid var(--accent);
+}
+.ai-body h4:first-child { margin-top: 0; }
+.ai-body p { margin: 6px 0; color: var(--txt-2); line-height: 1.75; }
+.ai-body ul, .ai-body ol { margin: 6px 0; padding-left: 20px; color: var(--txt-2); }
+.ai-body li { margin: 4px 0; line-height: 1.75; }
+.ai-body b { color: var(--txt); }
+.ai-body code {
+  background: var(--card-2); border: 1px solid var(--line-soft);
+  border-radius: 4px; padding: 1px 5px; font-size: 12px;
+}
+.ai-body .tbl { margin: 8px 0; }
+.ai-loading { padding: 20px 4px; color: var(--txt-3); }
+.ai-error { padding: 14px 4px; color: var(--up); line-height: 1.7; }
+
+/* ============ 添加交易：方向切换 ============ */
+.pa-side { display: flex; gap: 8px; margin-bottom: 4px; }
+.side-btn {
+  flex: 1; padding: 9px 0; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card-2);
+  color: var(--txt-2); font-size: 13.5px; transition: all .15s;
+}
+.side-btn:hover { border-color: var(--txt-3); }
+.side-btn.buy.active { border-color: var(--up); color: var(--up); background: var(--up-soft); font-weight: 600; }
+.side-btn.sell.active { border-color: var(--dn); color: var(--dn); background: var(--dn-soft); font-weight: 600; }
+
+/* ============ AI 分析独立页 ============ */
+#v-ai .ai-body { min-height: 220px; padding: 18px 20px 22px; font-size: 13.5px; }
+#v-ai .ai-body h4 { font-size: 14.5px; letter-spacing: .2px; }
+#v-ai .ai-body p, #v-ai .ai-body li { line-height: 1.85; }
+#v-ai .ai-body ul, #v-ai .ai-body ol { padding-left: 22px; }
+#v-ai .ai-loading, #v-ai .ai-error { padding: 28px 4px; }
+
+/* ============ 持仓表整齐化：全列定宽，剩余空间按比例分配（各账户表上下对齐且不截断） ============ */
+.port-panel .tbl { table-layout: fixed; }
+.port-panel th, .port-panel td { overflow: hidden; text-overflow: ellipsis; padding-left: 8px; padding-right: 8px; }
+.port-panel th:first-child, .port-panel td:first-child { padding-left: 16px; }
+.port-panel th:nth-child(1)  { width: 160px; }  /* 标的（最长：标普500指数ETF-SPDR） */
+.port-panel th:nth-child(2)  { width: 68px; }   /* 数量（碎股 102.4536） */
+.port-panel th:nth-child(3)  { width: 64px; }   /* 成本价 */
+.port-panel th:nth-child(4)  { width: 78px; }   /* 现价（$1,005.00） */
+.port-panel th:nth-child(5)  { width: 100px; }  /* 今日盈亏 */
+.port-panel th:nth-child(6)  { width: 84px; }   /* 市值（$17,635.46） */
+.port-panel th:nth-child(7)  { width: 128px; }  /* 持仓盈亏（+4,741.23 +36.72%） */
+.port-panel th:nth-child(8)  { width: 58px; }   /* 已实现 */
+.port-panel th:nth-child(9)  { width: 44px; }   /* 已收股息 */
+.port-panel th:nth-child(10) { width: 46px; }   /* 股息率 */
+.port-panel th:nth-child(11) { width: 38px; }   /* 评分 */
+.port-panel th:nth-child(12) { width: 54px; text-align: center; }  /* 信号 */
+.port-panel th:nth-child(13) { width: 24px; text-align: center; }  /* 删除 */
+.port-panel td:nth-child(12), .port-panel td:nth-child(13) { text-align: center; }
+
+/* ============ 消息中心 ============ */
+.news-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.news-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+.nws-tab {
+  font-size: 12px; padding: 4px 11px; border-radius: 14px; line-height: 1.4;
+  border: 1px solid var(--line); background: var(--card-2); color: var(--txt-2);
+  transition: color .12s, border-color .12s, background .12s;
+}
+.nws-tab:hover { border-color: var(--accent); color: var(--accent); }
+.nws-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.news-head-right { display: flex; align-items: center; gap: 10px; }
+
+.news-list { padding: 2px 0 8px; }
+.nws-day {
+  font-size: 11.5px; color: var(--txt-3); padding: 10px 4px 6px;
+  border-bottom: 1px solid var(--line-soft); letter-spacing: .04em;
+}
+.nws-item { display: flex; gap: 12px; padding: 9px 4px; border-bottom: 1px solid var(--line-soft); }
+.nws-item:last-child { border-bottom: 0; }
+.nws-item:hover { background: var(--card-2); }
+.nws-time { flex: none; width: 42px; color: var(--txt-3); font-size: 12px; padding-top: 1px; }
+.nws-body { flex: 1; min-width: 0; }
+.nws-title { font-size: 13.5px; line-height: 1.55; color: var(--txt); }
+.nws-title a:hover { color: var(--accent); text-decoration: underline; }
+.nws-item.hot .nws-title { font-weight: 600; }
+.nws-dot {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--up); margin-right: 6px; vertical-align: 2px;
+}
+.nws-digest {
+  margin-top: 3px; font-size: 12px; color: var(--txt-3); line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.nws-meta { margin-top: 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nws-tag { font-size: 11px; padding: 1px 7px; border-radius: 3px; line-height: 16px; border: 1px solid transparent; }
+.k-policy  { color: #7a3ee8; background: rgba(122, 62, 232, .10); border-color: rgba(122, 62, 232, .22); }
+.k-company { color: #c2410c; background: rgba(194, 65, 12, .09); border-color: rgba(194, 65, 12, .20); }
+.k-ann     { color: #0369a1; background: rgba(3, 105, 161, .09); border-color: rgba(3, 105, 161, .20); }
+.k-market  { color: var(--txt-2); background: var(--card-2); border-color: var(--line); }
+.k-global  { color: var(--txt-3); background: var(--card-2); border-color: var(--line); }
+.k-us      { color: #0e7490; background: rgba(14, 116, 144, .09); border-color: rgba(14, 116, 144, .22); }
+.nws-stock { font-size: 11px; color: var(--accent); background: var(--accent-soft); padding: 1px 6px; border-radius: 3px; }
+.nws-src { font-size: 11px; color: var(--txt-3); }
+
+html[data-theme="dark"] .k-policy  { color: #b79cff; background: rgba(183, 156, 255, .13); border-color: rgba(183, 156, 255, .26); }
+html[data-theme="dark"] .k-company { color: #ffab7a; background: rgba(255, 171, 122, .12); border-color: rgba(255, 171, 122, .24); }
+html[data-theme="dark"] .k-ann     { color: #7dd3fc; background: rgba(125, 211, 252, .12); border-color: rgba(125, 211, 252, .24); }
+html[data-theme="dark"] .k-us      { color: #67e8f9; background: rgba(103, 232, 249, .10); border-color: rgba(103, 232, 249, .24); }
+/* 估算值（如美股推算股息率）：与实收数据区分 */
+.est { color: var(--txt-3); font-style: italic; cursor: help; }
+
+/* ============ 家庭总览 ============ */
+.fam-pie-wrap { display: flex; align-items: center; gap: 22px; padding: 14px 6px; flex-wrap: wrap; }
+.fam-pie-wrap canvas { width: 190px; height: 190px; flex: none; }
+.fam-leg { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; min-width: 240px; flex: 1; }
+.fam-leg i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.fam-leg span { color: var(--txt-2); }
+.fam-leg b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.fam-leg em { font-style: normal; color: var(--txt-3); width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.fam-tgt { display: flex; align-items: center; gap: 12px; padding: 8px 2px; border-bottom: 1px solid var(--line-soft); }
+.fam-tgt:last-of-type { border-bottom: none; }
+.fam-tgt-name { display: flex; align-items: center; gap: 8px; width: 110px; flex: none; font-size: 12.5px; color: var(--txt-2); }
+.fam-tgt-name i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.fam-tgt-cur { display: flex; align-items: baseline; gap: 8px; width: 150px; flex: none; }
+.fam-tgt-cur b { font-variant-numeric: tabular-nums; }
+.fam-tgt-cur .small { display: flex; align-items: center; gap: 5px; }
+.fam-tgt-in {
+  width: 54px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--card-2); color: var(--txt); font: inherit; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.fam-tgt-in:focus { outline: none; border-color: var(--accent); }
+.fam-tgt-diff { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.fam-diffbar { width: 90px; height: 5px; border-radius: 3px; background: var(--line-soft); overflow: hidden; flex: none; }
+.fam-diffbar i { display: block; height: 100%; border-radius: 3px; }
+.grp.fam-liab { color: var(--dn); background: var(--dn-soft); }
+
+/* 家庭：成员 / 收支 */
+.fam-seg-wrap { padding: 0 0 12px; }
+.fam-income { color: var(--up); background: var(--up-soft); }
+.fam-expense { color: var(--dn); background: var(--dn-soft); }
+.fmb-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.fmb-row input {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card-2); color: var(--txt); font: inherit; font-size: 12.5px;
+}
+.fmb-row input:focus { outline: none; border-color: var(--accent); }
+.fmb-add { display: flex; gap: 8px; padding: 8px 0 2px; border-top: 1px solid var(--line-soft); margin-top: 6px; }
+.fmb-add input {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--card-2); color: var(--txt); font: inherit; font-size: 12.5px;
+}
+.btn.danger { color: var(--dn); }
+
+/* 家庭：月度收支 / 分类构成 / 净值曲线 */
+.fam-chart { height: 210px; padding: 4px 2px; }
+.fam-chart canvas { width: 100%; height: 100%; display: block; }
+.fam-cat-title { color: var(--txt-3); padding: 6px 2px 3px; }
+.fam-cat { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-size: 12px; }
+.fam-cat-name { width: 76px; flex: none; color: var(--txt-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fam-cat-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.fam-cat-bar i { display: block; height: 100%; border-radius: 3px; opacity: .85; }
+.fam-cat b { width: 88px; text-align: right; flex: none; font-variant-numeric: tabular-nums; font-weight: 600; }

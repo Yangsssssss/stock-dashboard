@@ -48,6 +48,27 @@ public class BoardService {
         this.fundService = fundService;
     }
 
+    /**
+     * 启动即后台预热：首次构建要拉 70 只标的的行情与 K 线（冷启动约 15s），
+     * 放在启动阶段跑掉，用户第一次打开页面就是缓存命中（约 1s）。
+     */
+    @org.springframework.context.event.EventListener(
+            org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public void warmUpOnStartup() {
+        Thread t = new Thread(() -> {
+            long t0 = System.currentTimeMillis();
+            try {
+                buildBoard(true);
+                System.out.printf("[board] 启动预热完成 用时 %.2fs%n",
+                        (System.currentTimeMillis() - t0) / 1000.0);
+            } catch (Exception e) {
+                System.out.println("[board] 启动预热失败：" + e.getMessage());
+            }
+        }, "board-warmup");
+        t.setDaemon(true);
+        t.start();
+    }
+
     public Map<String, Object> buildBoard(boolean force) {
         long now = System.currentTimeMillis();
         if (!force && boardCache != null && now - boardTs < BOARD_TTL_MS) return boardCache;
@@ -56,7 +77,7 @@ public class BoardService {
                 return boardCache;
             }
             long t0 = System.currentTimeMillis();
-            BuildResult r = buildInternal();
+            BuildResult r = buildInternal(force);
             boardTs = System.currentTimeMillis();
             boardCache = r.payload;
             persistAsync(r.payload, r.klines);
@@ -68,9 +89,15 @@ public class BoardService {
     private record BuildResult(Map<String, Object> payload, Map<String, List<Object[]>> klines) {}
 
     @SuppressWarnings("unchecked")
-    private BuildResult buildInternal() {
+    private BuildResult buildInternal(boolean force) {
         Set<String> hidden = new LinkedHashSet<>(db.hiddenBuiltins());
-        List<Map<String, Object>> custom = db.customInstruments();
+        // 代码大小写归一：美股 ticker 不区分大小写，DB 里出现过 usko / usKO 两份各自为政的情况
+        List<Map<String, Object>> custom = new ArrayList<>();
+        for (Map<String, Object> it : db.customInstruments()) {
+            Map<String, Object> c = new LinkedHashMap<>(it);
+            c.put("code", canonCode((String) it.get("code")));
+            custom.add(c);
+        }
         Set<String> builtinCodes = new LinkedHashSet<>();
         for (Universe.Group g : Universe.UNIVERSE.values()) {
             for (Universe.Item it : g.items()) builtinCodes.add(it.code());
@@ -81,14 +108,38 @@ public class BoardService {
             if (!builtinCodes.contains(code)) customCodes.add(code);
         }
 
+        // 持仓即看板池：持仓标的自动入池（参与行情/评分），不需要用户手动添加。
+        // 已被用户显式移除（hidden）的除外；内置池与自定义池里已有的不重复加。
+        Map<String, List<Map<String, Object>>> heldByGrp = new LinkedHashMap<>();
+        List<String> heldCodes = new ArrayList<>();
+        Set<String> heldCodeSet = new LinkedHashSet<>();
+        for (Map<String, Object> h : db.heldInstruments()) {
+            String code = canonCode((String) h.get("code"));
+            if (code == null || code.isEmpty()) continue;
+            heldCodeSet.add(code);           // 用于给内置池里的持仓标的打标
+            if (hidden.contains(code) || builtinCodes.contains(code) || customCodes.contains(code)) continue;
+            String[] cls = Universe.classifyCode(code);          // [grp, kind, market, currency]
+            String name = h.get("name") == null ? "" : String.valueOf(h.get("name"));
+            Map<String, Object> it = new LinkedHashMap<>();
+            it.put("code", code);
+            it.put("name", name.isEmpty() ? code : name);
+            it.put("kind", cls[1]);
+            it.put("currency", h.get("currency") != null && !String.valueOf(h.get("currency")).isEmpty()
+                    ? String.valueOf(h.get("currency")) : cls[3]);
+            heldByGrp.computeIfAbsent(cls[0], k -> new ArrayList<>()).add(it);
+            heldCodes.add(code);
+        }
+
         List<String> allCodes = new ArrayList<>(Universe.allCodes());
         allCodes.addAll(customCodes);
+        allCodes.addAll(heldCodes);
         // 场外基金报价单独走 FundService，其余走腾讯行情
         List<String> stockCodes = new ArrayList<>();
         List<String> fundCodes = new ArrayList<>();
         for (String c : allCodes) (FundService.isFund(c) ? fundCodes : stockCodes).add(c);
         long t0 = System.currentTimeMillis();
-        Map<String, Map<String, Object>> quotes = feed.fetchQuotes(stockCodes);
+        // force 刷新时连报价缓存一起跳过，否则用户点了刷新还可能看到 15 秒前的价格
+        Map<String, Map<String, Object>> quotes = feed.fetchQuotes(stockCodes, force);
         quotes.putAll(fundService.fetchQuotes(fundCodes));
         long t1 = System.currentTimeMillis();
         System.out.printf("[board] quotes %d/%d (股票%d 基金%d) 用时 %.2fs%n",
@@ -149,6 +200,22 @@ public class BoardService {
                 item.put("custom", true);
                 items.add(item);
             }
+            // 持仓标的（自动入池）
+            for (Map<String, Object> it : heldByGrp.getOrDefault(gkey, List.of())) {
+                String code = (String) it.get("code");
+                Map<String, Object> q = quotes.get(code);
+                boolean exists = items.stream().anyMatch(i -> code.equals(i.get("code")));
+                if (q == null || exists) continue;
+                Map<String, Object> item = makeItem(code, q, (String) it.get("name"),
+                        (String) it.get("kind"), gkey, klines.get(code),
+                        klines.getOrDefault(g.benchmark(), List.of()), false);
+                item.put("held", true);
+                items.add(item);
+            }
+            // 内置池里本身就有持仓的标的（如 MSFT）同样打标，前端统一显示「持仓」
+            for (Map<String, Object> i : items) {
+                if (heldCodeSet.contains(String.valueOf(i.get("code")))) i.put("held", true);
+            }
 
             List<Double> pcts = new ArrayList<>();
             int up = 0, down = 0, flat = 0, okAna = 0;
@@ -199,8 +266,13 @@ public class BoardService {
                 p.put("group", gkey);
                 p.put("group_label", g.get("label"));
                 p.put("kind", i.get("kind"));
+                p.put("held", Boolean.TRUE.equals(i.get("held")));
                 p.put("price", i.get("price"));
                 p.put("pct", i.get("pct"));
+                p.put("ext_price", i.get("ext_price"));
+                p.put("ext_pct", i.get("ext_pct"));
+                p.put("ext_tag", i.get("ext_tag"));
+                p.put("ext_time", i.get("ext_time"));
                 p.put("currency", i.get("currency"));
                 p.put("score", a.get("score"));
                 p.put("signal", a.get("signal"));
@@ -245,13 +317,24 @@ public class BoardService {
         sectorsOut.put("down", secDown.subList(0, Math.min(10, secDown.size())));
         sectorsOut.put("count", sectors.size());
 
-        // 核心指数
+        // 核心指数（附当天分时，供迷你走势图使用；失败时前端退回 45 日日线 spark）
         List<Object> indices = new ArrayList<>();
         for (Object gObj : groups.values()) {
             Map<String, Object> g = castMap(gObj);
             for (Object iObj : (List<?>) g.get("items")) {
                 Map<String, Object> i = castMap(iObj);
                 if ("index".equals(i.get("kind"))) indices.add(i);
+            }
+        }
+        for (Object iObj : indices) {
+            Map<String, Object> i = castMap(iObj);
+            try {
+                Map<String, Object> tr = feed.fetchTrends(String.valueOf(i.get("code")));
+                if (tr != null) {
+                    i.put("trend", tr.get("prices"));
+                    i.put("trend_pre", tr.get("preClose"));
+                }
+            } catch (Exception ignore) {
             }
         }
         Map<String, Object> om = new LinkedHashMap<>();
@@ -277,6 +360,12 @@ public class BoardService {
         dbOut.put("ready", db.ready());
         payload.put("db", dbOut);
         return new BuildResult(payload, klines);
+    }
+
+    /** 美股 ticker 大小写归一（腾讯/东财都按大写识别）：usko → usKO，其余代码原样返回。 */
+    static String canonCode(String code) {
+        if (code == null) return null;
+        return code.length() > 2 && code.startsWith("us") ? "us" + code.substring(2).toUpperCase() : code;
     }
 
     @SuppressWarnings("unchecked")
@@ -320,7 +409,13 @@ public class BoardService {
                     }
                 }
                 db.upsertInstruments(items);
-                int nK = db.upsertKlines(klines);
+                // 历史日线不足的标的（多是刚入池的持仓股）整段回补，否则增量只补最新日期之后，
+                // 空档永远补不上、评分也因样本不足算不出来。每轮限量，几轮自然补齐。
+                Set<String> thin = new java.util.HashSet<>(db.thinKlineCodes(60));
+                thin.retainAll(klines.keySet());
+                List<String> full = thin.stream().sorted().limit(8).toList();
+                if (!full.isEmpty()) System.out.println("[db] 回补历史日线：" + String.join(",", full));
+                int nK = db.upsertKlines(klines, new java.util.HashSet<>(full));
                 int nS = db.insertSnapshots(items, 180);
                 int nSc = db.upsertScores(items, LocalDate.now().toString());
                 if (nK > 0 || nS > 0 || nSc > 0) {

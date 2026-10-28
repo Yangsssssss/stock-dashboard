@@ -9,9 +9,11 @@ const St = {
   item: null,
   groupLabel: '',
   days: 120,
+  period: 'day',
   tab: 'kline',
   watch: new Set(),
   kl: null,
+  trend: null,
   fin: null,
   hist: null,
 };
@@ -28,6 +30,18 @@ function render() {
   $('#stLast').textContent = curSym(it.currency) + px(it.price);
   $('#stLast').className = 'st-last ' + cls(it.pct);
   $('#stChg').innerHTML = `<span class="${cls(it.pct)}">${it.change > 0 ? '+' : ''}${px(it.change)} · ${pctTxt(it.pct)}</span>`;
+
+  // 美股夜盘（盘前/盘后）：后端在报价里合并了新浪 gb_ 的非常规时段行情
+  const extEl = $('#stExt');
+  if (it.ext_price != null) {
+    extEl.style.display = '';
+    extEl.innerHTML = `<span class="ext-chip">${esc(it.ext_tag || '夜盘')}</span>`
+      + `<b class="${cls(it.ext_pct)}">${px(it.ext_price)}　${pctTxt(it.ext_pct)}</b>`
+      + (it.ext_time ? `<span class="ext-ts">${esc(it.ext_time)}</span>` : '');
+    extEl.title = `${it.ext_tag || '夜盘'}最新成交，相对常规收盘价的涨跌`;
+  } else {
+    extEl.style.display = 'none';
+  }
 
   St.watch = St.watch || new Set();
   syncStar();
@@ -117,17 +131,36 @@ function setTab(mode) {
   $('#klineWrap').style.display = St.tab === 'fin' ? 'none' : '';
   $('#finPanel').style.display = St.tab === 'fin' ? '' : 'none';
   $$('#stTabs .ct').forEach((x) => {
-    x.classList.toggle('active', St.tab === 'fin' ? x.dataset.tab === 'fin' : +x.dataset.days === St.days);
+    x.classList.toggle('active', St.tab === 'fin'
+      ? x.dataset.tab === 'fin'
+      : St.period === 'trend'
+        ? x.dataset.period === 'trend'
+        : x.dataset.period === St.period && +x.dataset.days === St.days);
   });
 }
 
+async function loadTrend() {
+  try {
+    const r = await fetch(`/api/trends?code=${encodeURIComponent(St.code)}`);
+    St.trend = await r.json();
+  } catch (e) {
+    St.trend = { prices: [], times: [] };
+  }
+  drawTrend($('#kline'), St.trend || { prices: [] });
+}
+// 盘中分时 30s 自动刷新（仅在该 Tab 激活时）
+setInterval(() => { if (St.tab === 'kline' && St.period === 'trend') loadTrend(); }, 30000);
+
 async function loadKline() {
   try {
-    const r = await fetch(`/api/kline?code=${encodeURIComponent(St.code)}&days=${St.days}`);
+    const r = await fetch(`/api/kline?code=${encodeURIComponent(St.code)}&days=${St.days}&period=${St.period}`);
     St.kl = await r.json();
   } catch (e) {
     St.kl = { bars: [] };
   }
+  // 长周期兜底源给的是不复权原始价，标一下口径，避免和前复权日线误读
+  const adjEl = $('#kAdj');
+  if (adjEl) adjEl.textContent = St.kl && St.kl.adj === 'none' ? '不复权' : '';
   drawKline($('#kline'), St.kl || { bars: [] });
 }
 
@@ -212,14 +245,20 @@ async function toggleStar() {
 
 async function removeInstrument() {
   const it = St.item;
-  if (!confirm(`从看板移除「${it.name} ${it.code.toUpperCase()}」？\n内置标的移除后可通过「标的管理 → 恢复默认」找回，自定义标的会直接删除。`)) return;
+  const ok = await QBConfirm({
+    title: '移出标的',
+    text: `从看板移除「<b>${esc(it.name)} ${esc(it.code.toUpperCase())}</b>」？<br/>内置标的移除后可通过「标的管理 → 恢复默认」找回，自定义标的会直接删除。`,
+    okText: '移出看板',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await fetch('/api/instruments', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: St.code, action: 'remove' }),
     });
     location.href = 'index.html';
-  } catch (e) { alert('移除失败：' + e.message); }
+  } catch (e) { QBToast.err('移除失败', { desc: e.message }); }
 }
 
 /* ---------------------------------------------------------------- 启动 */
@@ -272,6 +311,8 @@ $('#stTabs').onclick = (e) => {
   if (!b) return;
   if (b.dataset.tab === 'fin') { setTab('fin'); loadFinance(); return; }
   setTab('kline');
+  if (b.dataset.period === 'trend') { St.period = 'trend'; loadTrend(); return; }
+  St.period = b.dataset.period || 'day';
   St.days = +b.dataset.days;
   loadKline();
 };

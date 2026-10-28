@@ -135,21 +135,73 @@ public final class Universe {
         return null;
     }
 
-    /** 腾讯美股代码：指数直接用，个股按交易所加后缀（.OQ 纳斯达克 / .N 纽交所）。 */
+    /** 腾讯美股代码：指数直接用，个股按交易所加后缀（.OQ 纳斯达克 / .N 纽交所 / .AM 美交所-ETF）。 */
     public static final Map<String, String> US_TENCENT = Map.ofEntries(
             Map.entry("usDJI", "usDJI"), Map.entry("usIXIC", "usIXIC"), Map.entry("usINX", "usINX"),
             Map.entry("usAAPL", "usAAPL.OQ"), Map.entry("usNVDA", "usNVDA.OQ"),
             Map.entry("usMSFT", "usMSFT.OQ"), Map.entry("usGOOGL", "usGOOGL.OQ"),
             Map.entry("usAMZN", "usAMZN.OQ"), Map.entry("usMETA", "usMETA.OQ"),
             Map.entry("usTSLA", "usTSLA.OQ"), Map.entry("usAVGO", "usAVGO.OQ"),
-            Map.entry("usTSM", "usTSM.N"));
+            Map.entry("usTSM", "usTSM.N"),
+            // 持仓 / 常用标的实测后缀（后缀错了腾讯只返回 1 根伪数据）
+            Map.entry("usKO", "usKO.N"), Map.entry("usBRK.B", "usBRK.B.N"),
+            Map.entry("usCOST", "usCOST.OQ"), Map.entry("usPDD", "usPDD.OQ"),
+            Map.entry("usQQQ", "usQQQ.OQ"), Map.entry("usSPY", "usSPY.AM"),
+            Map.entry("usVOO", "usVOO.AM"), Map.entry("usV", "usV.N"),
+            Map.entry("usJPM", "usJPM.N"), Map.entry("usXOM", "usXOM.N"),
+            Map.entry("usJNJ", "usJNJ.N"), Map.entry("usPG", "usPG.N"),
+            Map.entry("usMCD", "usMCD.N"), Map.entry("usIBM", "usIBM.N"));
+
+    /**
+     * 美股后缀探测结果缓存：code → 已验证可用的腾讯符号。
+     * 未知标的每次都试 .OQ/.N/.AM 太慢，成功后记住，后续只打一个请求。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> US_SYM_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static void rememberUsSymbol(String code, String sym) {
+        if (code != null && sym != null && code.startsWith("us")) US_SYM_CACHE.put(code, sym);
+    }
+
+    /** 腾讯美股符号候选：缓存 → 已知映射 → .OQ/.N/.AM 依次试。 */
+    public static List<String> usTencentCandidates(String code) {
+        List<String> out = new ArrayList<>();
+        String cached = US_SYM_CACHE.get(code);
+        if (cached != null) out.add(cached);
+        String mapped = US_TENCENT.get(code);
+        if (mapped != null && !out.contains(mapped)) out.add(mapped);
+        if (!code.startsWith("us")) return out;
+        String base = "us" + code.substring(2).toUpperCase();
+        for (String suf : new String[]{".OQ", ".N", ".AM"}) {
+            String c = base + suf;
+            if (!out.contains(c)) out.add(c);
+        }
+        return out;
+    }
 
     // 东财 secid：1=沪 / 0=深 / 116=港股 / 124=恒生科技 / 100=海外指数
+    // 美股：105=纳斯达克 / 106=纽交所 / 107=美交所(ARCA，多数 ETF)
     public static final Map<String, String> US_SECID = Map.ofEntries(
             Map.entry("usDJI", "100.DJIA"), Map.entry("usIXIC", "100.NDX"), Map.entry("usINX", "100.SPX"),
             Map.entry("usAAPL", "105.AAPL"), Map.entry("usNVDA", "105.NVDA"), Map.entry("usMSFT", "105.MSFT"),
             Map.entry("usGOOGL", "105.GOOGL"), Map.entry("usAMZN", "105.AMZN"), Map.entry("usMETA", "105.META"),
-            Map.entry("usTSLA", "105.TSLA"), Map.entry("usAVGO", "105.AVGO"), Map.entry("usTSM", "106.TSM"));
+            Map.entry("usTSLA", "105.TSLA"), Map.entry("usAVGO", "105.AVGO"), Map.entry("usTSM", "106.TSM"),
+            Map.entry("usKO", "106.KO"), Map.entry("usCOST", "105.COST"), Map.entry("usPDD", "105.PDD"),
+            Map.entry("usQQQ", "105.QQQ"), Map.entry("usSPY", "107.SPY"), Map.entry("usVOO", "107.VOO"));
+
+    /** 东财美股 secid 候选：已知映射 → 105/106/107 依次试。 */
+    public static List<String> usSecidCandidates(String code) {
+        List<String> out = new ArrayList<>();
+        String mapped = US_SECID.get(code);
+        if (mapped != null) out.add(mapped);
+        if (!code.startsWith("us")) return out;
+        String sym = code.substring(2).toUpperCase();
+        for (String mk : new String[]{"105", "106", "107"}) {
+            String c = mk + "." + sym;
+            if (!out.contains(c)) out.add(c);
+        }
+        return out;
+    }
 
     public static final Map<String, String> HK_INDEX_SECID = Map.of(
             "hkHSI", "100.HSI", "hkHSCEI", "100.HSCEI", "hkHSTECH", "124.HSTECH");

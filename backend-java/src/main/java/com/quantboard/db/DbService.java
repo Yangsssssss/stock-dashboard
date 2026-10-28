@@ -17,6 +17,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -112,18 +113,39 @@ public class DbService {
         }
     }
 
-    private static List<String> splitSql(String text) {
+    /**
+     * 切句：按「引号外、非注释」的分号切分（package-private：便于单测覆盖注释、结尾无分号等边界）。
+     *
+     * 早先的实现只在「行尾分号」处切，遇到 V12 那种一行三句
+     * `PREPARE st FROM @ddl; EXECUTE st; DEALLOCATE PREPARE st;` 会整行塞给 JDBC 报语法错，
+     * 而迁移失败只会让整个持久层静默降级（看板能看，历史/持仓全丢），排查成本极高。
+     * 所以这里按字符扫描，同时跳过 '--' 行注释，并让字符串字面量里的分号不参与切分。
+     */
+    static List<String> splitSql(String text) {
         List<String> out = new ArrayList<>();
         StringBuilder buf = new StringBuilder();
-        for (String line : text.split("\n", -1)) {
-            String s = line.strip();
-            if (s.isEmpty() || s.startsWith("--")) continue;
-            buf.append(line).append('\n');
-            if (s.endsWith(";")) {
-                String stmt = buf.toString().strip().replaceAll(";$", "").strip();
+        boolean inSingle = false, inDouble = false, inBacktick = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            boolean quoted = inSingle || inDouble || inBacktick;
+
+            // -- 行注释：跳到行尾（'--' 前必须是空白或行首，避免误伤 a--b 这类表达式）
+            if (!quoted && c == '-' && i + 1 < text.length() && text.charAt(i + 1) == '-'
+                    && (i == 0 || Character.isWhitespace(text.charAt(i - 1)))) {
+                while (i < text.length() && text.charAt(i) != '\n') i++;
+                buf.append('\n');
+                continue;
+            }
+            if (c == '\'' && !inDouble && !inBacktick) inSingle = !inSingle;
+            else if (c == '"' && !inSingle && !inBacktick) inDouble = !inDouble;
+            else if (c == '`' && !inSingle && !inDouble) inBacktick = !inBacktick;
+            else if (c == ';' && !quoted) {
+                String stmt = buf.toString().strip();
                 if (!stmt.isEmpty()) out.add(stmt);
                 buf.setLength(0);
+                continue;
             }
+            buf.append(c);
         }
         String rest = buf.toString().strip();
         if (!rest.isEmpty()) out.add(rest);
@@ -162,7 +184,16 @@ public class DbService {
     // ---------------------------------------------------------------- 日线
     /** 增量写入：只补每个标的最新日期之后的数据。返回写入行数。 */
     public int upsertKlines(Map<String, List<Object[]>> series) {
+        return upsertKlines(series, Set.of());
+    }
+
+    /**
+     * 写入日线。默认增量（只补最新日期之后）；full 中的代码整段 UPSERT，
+     * 用于历史数据不足的标的回补（增量补不回已存在的最新日期之前的空档）。
+     */
+    public int upsertKlines(Map<String, List<Object[]>> series, Set<String> full) {
         if (series == null || series.isEmpty()) return 0;
+        Set<String> fullSet = full == null ? Set.of() : full;
         try {
             Map<String, String> latest = new HashMap<>();
             jdbc.query("SELECT code, MAX(trade_date) AS d FROM kline_daily GROUP BY code", rs -> {
@@ -170,7 +201,7 @@ public class DbService {
             });
             List<Object[]> rows = new ArrayList<>();
             for (var e : series.entrySet()) {
-                String last = latest.get(e.getKey());
+                String last = fullSet.contains(e.getKey()) ? null : latest.get(e.getKey());
                 for (Object[] b : e.getValue()) {
                     String d = String.valueOf(b[0]);
                     if (last != null && d.compareTo(last) <= 0) continue;
@@ -187,6 +218,19 @@ public class DbService {
         } catch (Exception e) {
             System.out.println("[db] kline 写入失败：" + e.getMessage());
             return 0;
+        }
+    }
+
+    /** 日线数量不足 minBars 的标的（多为新入池标的，需要整段回补历史）。 */
+    public Set<String> thinKlineCodes(int minBars) {
+        if (!ready) return Set.of();
+        try {
+            List<String> codes = jdbc.queryForList(
+                    "SELECT code FROM kline_daily GROUP BY code HAVING COUNT(*) < " + Math.max(1, minBars),
+                    String.class);
+            return new java.util.HashSet<>(codes);
+        } catch (Exception e) {
+            return Set.of();
         }
     }
 
@@ -320,6 +364,25 @@ public class DbService {
         }
     }
 
+    /**
+     * 当前持仓涉及的标的：由 trade 流水重放（BUY/INIT 加、SELL 减）得出净持仓 > 0 的代码。
+     * 持仓即看板池 —— 买了就自动进池、参与评分，不需要用户再去标的管理里手动加。
+     */
+    public List<Map<String, Object>> heldInstruments() {
+        if (!ready) return List.of();
+        try {
+            return jdbc.queryForList(
+                    "SELECT code, MAX(name) AS name, MAX(currency) AS currency FROM trade "
+                            + "GROUP BY code "
+                            + "HAVING SUM(CASE WHEN side IN ('BUY','INIT') THEN COALESCE(qty,0) "
+                            + "WHEN side='SELL' THEN -COALESCE(qty,0) ELSE 0 END) > 1e-9 "
+                            + "ORDER BY code");
+        } catch (Exception e) {
+            System.out.println("[db] 读取持仓标的失败：" + e.getMessage());
+            return List.of();
+        }
+    }
+
     // ---------------------------------------------------------------- 自定义标的
     public List<Map<String, Object>> customInstruments() {
         if (!ready) return List.of();
@@ -344,6 +407,9 @@ public class DbService {
 
     public boolean instrumentAdd(String code, String name, String grp, String kind,
                                  String market, String currency) {
+        if (code != null && code.length() > 2 && code.startsWith("us")) {
+            code = "us" + code.substring(2).toUpperCase();   // 美股 ticker 统一大写，避免 usko/usKO 两份数据
+        }
         try {
             jdbc.update(
                     "INSERT INTO instrument (code, name, market, kind, currency, grp, custom, hidden) "

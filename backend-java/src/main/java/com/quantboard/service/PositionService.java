@@ -25,8 +25,9 @@ public class PositionService {
     private final JdbcTemplate jdbc;
     private final FeedService feed;
     private final OcrService ocr;
-    private final double fxHkd;
-    private final double fxUsd;
+    private final TradeService trades;
+    private final PerformanceService perf;
+    private final DividendService dividends;
 
     /** 名称列出现的词视为"文本"，避免把名称里的数字误当数量。 */
     private static final Pattern P_CODE_A = Pattern.compile("(?<!\\d)\\d{6}(?!\\d)");
@@ -51,14 +52,14 @@ public class PositionService {
             Map.entry("市值", "mv"), Map.entry("金额", "mv"),
             Map.entry("盈亏", "pnl"), Map.entry("收益", "pnl"), Map.entry("浮动", "pnl"));
 
-    public PositionService(JdbcTemplate jdbc, FeedService feed, OcrService ocr,
-                           @Value("${quantboard.fx-hkd:0.92}") double fxHkd,
-                           @Value("${quantboard.fx-usd:7.15}") double fxUsd) {
+    public PositionService(JdbcTemplate jdbc, FeedService feed, OcrService ocr, TradeService trades,
+                           PerformanceService perf, DividendService dividends) {
         this.jdbc = jdbc;
         this.feed = feed;
         this.ocr = ocr;
-        this.fxHkd = fxHkd;
-        this.fxUsd = fxUsd;
+        this.trades = trades;
+        this.perf = perf;
+        this.dividends = dividends;
     }
 
     // ---------------------------------------------------------------- 归一化
@@ -110,104 +111,172 @@ public class PositionService {
     }
 
     // ---------------------------------------------------------------- 列表
-    public boolean dbReady() {
-        try { jdbc.execute("SELECT 1 FROM holding LIMIT 1"); return true; }
-        catch (Exception e) { return false; }
-    }
-
     public Map<String, Object> list() {
         Map<String, Object> out = new LinkedHashMap<>();
-        List<Map<String, Object>> rows;
+        Map<String, TradeService.Pos> agg;
+        Map<String, Object[]> scores = new HashMap<>();
+        Map<String, Double> estDivPerShare = new HashMap<>();   // 同一标的只反推一次
         try {
-            rows = jdbc.queryForList(
-                    "SELECT h.id, h.broker, h.code, h.name, h.qty, h.cost, h.currency, h.note, "
-                            + "h.updated_at, d.score, d.sig "
-                            + "FROM holding h LEFT JOIN daily_score d ON d.code = h.code "
-                            + "AND d.trade_date = (SELECT MAX(trade_date) FROM daily_score s2 WHERE s2.code = h.code) "
-                            + "ORDER BY h.broker, h.created_at, h.id");
+            agg = trades.aggregate();
+            for (Map<String, Object> r : jdbc.queryForList(
+                    "SELECT d.code, d.score, d.sig FROM daily_score d WHERE d.trade_date = "
+                            + "(SELECT MAX(trade_date) FROM daily_score s2 WHERE s2.code = d.code)")) {
+                scores.put(String.valueOf(r.get("code")), new Object[]{r.get("score"), r.get("sig")});
+            }
         } catch (Exception e) {
             out.put("ready", false);
             out.put("brokers", List.of());
+            out.put("error", e.getMessage());
             return out;
         }
 
         // 一次性取全部实时行情
-        List<String> codes = rows.stream().map(r -> (String) r.get("code")).distinct().toList();
-        Map<String, Map<String, Object>> quotes = codes.isEmpty()
-                ? Map.of() : feed.fetchQuotes(codes);
+        List<String> codes = agg.values().stream().map(p -> p.code).distinct().toList();
+        Map<String, Map<String, Object>> quotes = codes.isEmpty() ? Map.of() : feed.fetchQuotes(codes);
+        // 美股股息估算：并行拉。串行的话冷启动要 8 只 × 多次 HTTP ≈ 几十秒，持仓页会卡死
+        estDivPerShare.putAll(dividends.ttmBatch(codes));
 
         Map<String, List<Map<String, Object>>> byBroker = new LinkedHashMap<>();
-        for (Map<String, Object> r : rows) {
-            String code = (String) r.get("code");
-            Map<String, Object> q = quotes.get(code);
-            double qty = U.num(r.get("qty"));
-            double cost = U.num(r.get("cost"));
+        Map<String, List<Map<String, Object>>> closedByBroker = new LinkedHashMap<>();
+        // currency → [mv, cost, dayPl, realized, divTotal, divTtm]（realized/div 含已清仓标的）
+        Map<String, double[]> grand = new LinkedHashMap<>();
+
+        for (TradeService.Pos p : agg.values()) {
+            Map<String, Object> q = quotes.get(p.code);
             double price = q != null ? U.num(q.get("price")) : 0;
             double pct = q != null ? U.num(q.get("pct")) : 0;
             String currency = q != null && q.get("currency") != null && !String.valueOf(q.get("currency")).isEmpty()
-                    ? (String) q.get("currency") : String.valueOf(r.get("currency"));
+                    ? String.valueOf(q.get("currency"))
+                    : (p.currency == null || p.currency.isEmpty() ? "CNY" : p.currency);
 
+            double mv = p.qty * price;
+            double pl = mv - p.costTotal;
             Map<String, Object> it = new LinkedHashMap<>();
-            it.put("id", r.get("id"));
-            it.put("broker", r.get("broker"));
-            it.put("code", code);
-            it.put("name", q != null && q.get("name") != null && !String.valueOf(q.get("name")).isEmpty()
-                    ? q.get("name") : r.get("name"));
-            it.put("qty", qty);
-            it.put("cost", cost);
+            it.put("pos_key", p.broker + "|" + p.code);
+            it.put("broker", p.broker);
+            it.put("code", p.code);
+            it.put("name", p.name == null || p.name.isEmpty() ? p.code : p.name);
+            it.put("qty", U.round(p.qty, 4));
+            it.put("cost", U.round(p.avgCost(), 4));
             it.put("currency", currency);
             it.put("price", price);
             it.put("pct", pct);
             it.put("live", price > 0);
-            double mv = qty * price;
             it.put("mv", U.round(mv, 2));
-            it.put("cost_total", U.round(qty * cost, 2));
-            it.put("pl", U.round(mv - qty * cost, 2));
-            it.put("pl_pct", cost > 0 ? U.round(U.pct(price, cost), 2) : 0);
-            it.put("day_pl", price > 0 && qty > 0
-                    ? U.round(qty * (price - price / (1 + pct / 100.0)), 2) : 0);
-            it.put("score", r.get("score") != null ? U.num(r.get("score")) : null);
-            it.put("signal", r.get("sig"));
-            it.put("updated_at", String.valueOf(r.get("updated_at")));
-            byBroker.computeIfAbsent((String) r.get("broker"), k -> new ArrayList<>()).add(it);
+            it.put("cost_total", U.round(p.costTotal, 2));
+            it.put("pl", U.round(pl, 2));
+            it.put("pl_pct", p.costTotal > 0 ? U.round(U.pct(mv, p.costTotal), 2) : 0);
+            it.put("day_pl", price > 0 && p.qty > 0
+                    ? U.round(p.qty * (price - price / (1 + pct / 100.0)), 2) : 0);
+            it.put("realized", U.round(p.realized, 2));
+            it.put("div_total", U.round(p.divTotal, 2));
+            it.put("div_ttm", U.round(p.divTtm, 2));
+            it.put("div_rate_cost", p.costTotal > 0 ? U.round(p.divTtm / p.costTotal * 100, 2) : 0);
+            it.put("div_rate_mv", mv > 0 ? U.round(p.divTtm / mv * 100, 2) : 0);
+            // 美股：没有 DIV 流水就用「复权因子反推」的近 12 个月每股股息估一个参考股息率，
+            // 只用于展示（带 ~ 标记），不写进任何现金流/收益统计。
+            double ttmPerShare = estDivPerShare.computeIfAbsent(p.code,
+                    k -> k.startsWith("us") ? dividends.usTtmPerShare(k) : 0);
+            double divEst = ttmPerShare > 0 && p.qty > 0 ? U.round(ttmPerShare * p.qty, 2) : 0;
+            it.put("div_ttm_est", divEst);
+            it.put("div_rate_mv_est", mv > 0 && divEst > 0 ? U.round(divEst / mv * 100, 2) : 0);
+            it.put("div_est", divEst > 0 && p.divTtm <= 0);
+            it.put("trades", p.trades);
+            it.put("closed", p.closed());
+            Object[] sc = scores.get(p.code);
+            it.put("score", sc != null && sc[0] != null ? U.num(sc[0]) : null);
+            it.put("signal", sc != null ? sc[1] : null);
+
+            double[] g = grand.computeIfAbsent(currency, k -> new double[6]);
+            g[3] += p.realized;
+            g[4] += p.divTotal;
+            g[5] += p.divTtm;
+            if (p.closed()) {
+                closedByBroker.computeIfAbsent(p.broker, k -> new ArrayList<>()).add(it);
+            } else {
+                byBroker.computeIfAbsent(p.broker, k -> new ArrayList<>()).add(it);
+                g[0] += mv;
+                g[1] += p.costTotal;
+                g[2] += U.num(it.get("day_pl"));
+            }
         }
 
         List<Map<String, Object>> brokers = new ArrayList<>();
-        Map<String, double[]> grand = new LinkedHashMap<>();  // currency → [mv, cost, day_pl]
-        for (var e : byBroker.entrySet()) {
-            List<Map<String, Object>> items = e.getValue();
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        names.addAll(byBroker.keySet());
+        names.addAll(closedByBroker.keySet());
+        for (String brokerName : names) {
+            List<Map<String, Object>> items = byBroker.getOrDefault(brokerName, List.of());
+            List<Map<String, Object>> closedItems = closedByBroker.getOrDefault(brokerName, List.of());
             Map<String, double[]> tot = new LinkedHashMap<>();
             for (Map<String, Object> it : items) {
-                String cur = (String) it.get("currency");
-                double mv = U.num(it.get("mv"));
-                double ct = U.num(it.get("cost_total"));
-                double dp = U.num(it.get("day_pl"));
-                double[] t = tot.computeIfAbsent(cur, k -> new double[3]);
-                t[0] += mv; t[1] += ct; t[2] += dp;
-                double[] g = grand.computeIfAbsent(cur, k -> new double[3]);
-                g[0] += mv; g[1] += ct; g[2] += dp;
+                String cur = String.valueOf(it.get("currency"));
+                double[] t = tot.computeIfAbsent(cur, k -> new double[6]);
+                t[0] += U.num(it.get("mv"));
+                t[1] += U.num(it.get("cost_total"));
+                t[2] += U.num(it.get("day_pl"));
+                t[3] += U.num(it.get("realized"));
+                t[4] += U.num(it.get("div_total"));
+                t[5] += U.num(it.get("div_ttm"));
+            }
+            for (Map<String, Object> it : closedItems) {   // 清仓标的只贡献已实现与股息
+                String cur = String.valueOf(it.get("currency"));
+                double[] t = tot.computeIfAbsent(cur, k -> new double[6]);
+                t[3] += U.num(it.get("realized"));
+                t[4] += U.num(it.get("div_total"));
+                t[5] += U.num(it.get("div_ttm"));
             }
             Map<String, Object> b = new LinkedHashMap<>();
-            b.put("broker", e.getKey());
+            b.put("broker", brokerName);
             b.put("items", items);
+            b.put("closed", closedItems);
             b.put("totals", totalsList(tot));
+            double bcny = 0;
+            for (var e : tot.entrySet()) bcny += e.getValue()[0] * fxOf(e.getKey());
+            b.put("mv_cny", U.round(bcny, 2));   // 折人民币市值，供前端直接展示，避免前端二次折算
             brokers.add(b);
         }
 
         out.put("ready", true);
         out.put("brokers", brokers);
         out.put("grand", totalsList(grand));
-        // 约合人民币（静态近似汇率，仅用于跨币种量级参考）
-        double cny = 0;
+
+        // 约合人民币（静态近似汇率，仅用于跨币种量级参考）：市值/成本/今日/已实现/股息统一折算
+        double mvCny = 0, costCny = 0, dayCny = 0, realCny = 0, divCny = 0, divTtmCny = 0;
         for (var e : grand.entrySet()) {
-            cny += e.getValue()[0] * (e.getKey().equals("HKD") ? fxHkd : e.getKey().equals("USD") ? fxUsd : 1);
+            double fx = fxOf(e.getKey());
+            mvCny += e.getValue()[0] * fx;
+            costCny += e.getValue()[1] * fx;
+            dayCny += e.getValue()[2] * fx;
+            realCny += e.getValue()[3] * fx;
+            divCny += e.getValue()[4] * fx;
+            divTtmCny += e.getValue()[5] * fx;
         }
-        out.put("grand_cny", U.round(cny, 0));
-        out.put("fx", Map.of("HKD", fxHkd, "USD", fxUsd));
+        Map<String, Object> cnyDetail = new LinkedHashMap<>();
+        cnyDetail.put("mv", U.round(mvCny, 0));
+        cnyDetail.put("cost", U.round(costCny, 2));
+        cnyDetail.put("pl", U.round(mvCny - costCny, 2));
+        cnyDetail.put("pl_pct", costCny > 0 ? U.round((mvCny - costCny) / costCny * 100, 2) : 0);
+        cnyDetail.put("day_pl", U.round(dayCny, 2));
+        cnyDetail.put("realized", U.round(realCny, 2));
+        cnyDetail.put("div_total", U.round(divCny, 2));
+        cnyDetail.put("div_ttm", U.round(divTtmCny, 2));
+        cnyDetail.put("total", U.round(mvCny - costCny + realCny + divCny, 2));
+        out.put("grand_cny_detail", cnyDetail);
+        out.put("grand_cny", U.round(mvCny, 0));
+        out.put("fx", perf.fxMap());
+        for (Map<String, Object> b : brokers) {   // 占比也由后端算，前端只渲染
+            b.put("share", mvCny > 0 ? U.round(U.num(b.get("mv_cny")) / mvCny * 100, 2) : 0);
+        }
         return out;
     }
 
-    private static List<Map<String, Object>> totalsList(Map<String, double[]> tot) {
+    /** 汇率口径统一由收益引擎提供（全站唯一出处）。 */
+    private double fxOf(String currency) {
+        return perf.fxOf(currency);
+    }
+
+    private List<Map<String, Object>> totalsList(Map<String, double[]> tot) {
         List<Map<String, Object>> list = new ArrayList<>();
         for (var e : tot.entrySet()) {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -217,6 +286,11 @@ public class PositionService {
             m.put("pl", U.round(e.getValue()[0] - e.getValue()[1], 2));
             m.put("pl_pct", e.getValue()[1] > 0 ? U.round(U.pct(e.getValue()[0], e.getValue()[1]), 2) : 0);
             m.put("day_pl", U.round(e.getValue()[2], 2));
+            m.put("realized", U.round(e.getValue()[3], 2));
+            m.put("div_total", U.round(e.getValue()[4], 2));
+            m.put("div_ttm", U.round(e.getValue()[5], 2));
+            m.put("fx", fxOf(e.getKey()));                       // 前端直接乘，不再自己判断币种
+            m.put("mv_cny", U.round(e.getValue()[0] * fxOf(e.getKey()), 2));
             list.add(m);
         }
         return list;
@@ -225,6 +299,17 @@ public class PositionService {
     // ---------------------------------------------------------------- 增删
     /** 新增 / 更新（broker+code 唯一）。行情能取到时用行情的名称与币种。 */
     public Map<String, Object> upsert(String broker, String codeRaw, String name, double qty, double cost) {
+        return upsert(broker, codeRaw, name, qty, cost, null, "INIT");
+    }
+
+    /**
+     * 手动录入一笔交易。
+     * 首次录入（该 broker+code 无流水）：按期初建仓（INIT）入库，日期即建仓日；
+     * 已有持仓时：side=BUY 记一笔买入（再买入 / 加仓），side=SELL 记一笔卖出（校验持股足够）。
+     * 成本价字段双向复用：买入即买入价（计入成本），卖出即卖出价（算已实现盈亏）。
+     */
+    public Map<String, Object> upsert(String broker, String codeRaw, String name, double qty, double cost,
+                                      String dateStr, String side) {
         Map<String, Object> out = new LinkedHashMap<>();
         String[] norm = normalizeCode(codeRaw);
         if (norm == null) {
@@ -256,11 +341,56 @@ public class PositionService {
             finalName = code;
         }
         if (broker == null || broker.isBlank()) broker = "默认账户";
+        String s = side == null || side.isBlank() ? "INIT" : side.trim().toUpperCase();
         try {
-            jdbc.update("INSERT INTO holding (broker, code, name, qty, cost, currency) VALUES (?,?,?,?,?,?) "
-                            + "ON DUPLICATE KEY UPDATE qty=VALUES(qty), cost=VALUES(cost), name=VALUES(name), "
-                            + "currency=VALUES(currency)",
-                    broker.trim(), code, finalName, qty, cost, currency);
+            Integer exists = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM trade WHERE broker=? AND code=?", Integer.class, broker.trim(), code);
+            boolean first = exists == null || exists == 0;
+            java.time.LocalDate d;
+            try {
+                d = dateStr == null || dateStr.isBlank() ? java.time.LocalDate.now()
+                        : java.time.LocalDate.parse(dateStr.substring(0, 10));
+            } catch (Exception ignore) {
+                d = java.time.LocalDate.now();
+            }
+            if (first) {
+                if ("SELL".equals(s)) {
+                    out.put("ok", false);
+                    out.put("error", "「" + broker.trim() + "」还没有 " + finalName + " 的持仓，卖出请先记买入");
+                    return out;
+                }
+                double amt = Math.round(qty * cost * 100) / 100.0;
+                jdbc.update("INSERT INTO trade (broker, code, name, side, trade_date, qty, price, amount, fee, currency, note) "
+                                + "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        broker.trim(), code, finalName, "INIT", d, qty, cost, amt, 0, currency,
+                        "期初建仓（手动录入 / 截图识别）");
+            } else if ("BUY".equals(s) || "SELL".equals(s)) {
+                if ("SELL".equals(s)) {
+                    TradeService.Pos p = trades.aggregate().get(broker.trim() + "|" + code);
+                    double held = p == null ? 0 : p.qty;
+                    if (qty > held + 1e-9) {
+                        out.put("ok", false);
+                        out.put("error", "卖出数量超过当前持仓（现有 " + U.round(held, 4) + "）");
+                        out.put("code", code);
+                        return out;
+                    }
+                }
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("side", s);
+                body.put("broker", broker.trim());
+                body.put("code", code);
+                body.put("name", finalName);
+                body.put("qty", qty);
+                body.put("price", cost);
+                body.put("fee", 0);
+                body.put("trade_date", d.toString());
+                body.put("note", "手动录入");
+                return trades.add(body);
+            } else {
+                out.put("ok", false);
+                out.put("error", "side 必须是 BUY / SELL");
+                return out;
+            }
             out.put("ok", true);
             out.put("code", code);
             out.put("name", finalName);
@@ -273,9 +403,9 @@ public class PositionService {
         return out;
     }
 
-    public boolean remove(long id) {
-        try { return jdbc.update("DELETE FROM holding WHERE id=?", id) > 0; }
-        catch (Exception e) { return false; }
+    /** 删除某账户下某标的的全部流水（前端 ✕）。 */
+    public boolean removePosition(String broker, String code) {
+        return trades.removePosition(broker, code) > 0;
     }
 
     // ---------------------------------------------------------------- OCR 解析
@@ -288,6 +418,14 @@ public class PositionService {
         Map<String, Map<String, Object>> quotes = codes.isEmpty() ? Map.of() : feed.fetchQuotes(codes);
         for (Map<String, Object> it : items) {
             Map<String, Object> q = quotes.get(it.get("code"));
+            if (q == null) {
+                // 老式股票类别代码（BRK B / BRK.B 被 OCR 读成 BRKB）：补点后重查行情，取到才改写代码
+                String alt = shareClassCode((String) it.get("code"));
+                if (alt != null) {
+                    Map<String, Object> qa = feed.fetchQuotes(List.of(alt)).get(alt);
+                    if (qa != null) { it.put("code", alt); q = qa; }
+                }
+            }
             if (q != null) {
                 it.put("quote_name", q.get("name"));
                 it.put("price", U.num(q.get("price")));
@@ -325,12 +463,23 @@ public class PositionService {
             headIdx = i; colField = m; break;
         }
         if (headIdx >= 0) {
-            for (int i = headIdx + 1; i < tabbed.size(); i++) {
-                Map<String, Object> row = parseByColumns(tabbed.get(i), colField);
+            if (isStackedHeader(tabbed.get(headIdx))) {
+                out.addAll(parseStackedBody(tabbed, headIdx));
+            } else {
+                for (int i = headIdx + 1; i < tabbed.size(); i++) {
+                    Map<String, Object> row = parseByColumns(tabbed.get(i), colField);
+                    if (row != null) out.add(row);
+                }
+            }
+        }
+        // 2) IBKR（盈透）移动端行式布局：`COST NASDAQ.NMS 1005.00 5.0313 -0.81 346.13`
+        if (out.isEmpty()) {
+            for (List<String> words : tabbed) {
+                Map<String, Object> row = parseIbkrLine(words);
                 if (row != null) out.add(row);
             }
         }
-        // 2) 卡片式布局：名称+代码行开块，块内按 label→value 配对
+        // 3) 卡片式布局：名称+代码行开块，块内按 label→value 配对
         if (out.isEmpty()) out = parseBlocks(tabbed);
         // 3) 无表头：整行启发式（含 tab 行中未命中的）
         if (out.isEmpty()) {
@@ -347,12 +496,202 @@ public class PositionService {
         return new ArrayList<>(seen.values());
     }
 
+    // ------------------------------------------------------------- 叠排布局解析
+    /**
+     * 叠排表头：同一表头词内含两组语义（如「市值/数量」「现价/成本」），
+     * 富途 / 长桥等 App 的持仓列表常见此布局。
+     */
+    private static boolean isStackedHeader(List<String> words) {
+        for (String w : words) {
+            String t = w == null ? "" : w.replaceAll("[\\s:：|/／]", "");
+            boolean hasQty = t.contains("数量") || t.contains("持仓") || t.contains("股数") || t.contains("份额");
+            boolean hasMv = t.contains("市值") || t.contains("金额");
+            boolean hasCost = t.contains("成本");
+            boolean hasPrice = t.contains("现价") || t.contains("市价") || t.contains("最新") || t.contains("价格");
+            if ((hasMv && hasQty) || (hasCost && hasPrice)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 叠排布局解析：每只标的的 市值/数量/成本/现价 四个数可能被 OCR 合并进一行，
+     * 也可能拆成「名称+市值+现价 / 代码+数量+成本」两行，且列内上下值顺序不稳定。
+     * 策略：逐行提取 名称/代码/纯数字；名称行(2 个数)与代码行(2 个数)跨行配对；
+     * 凑齐 4 个数后按 市值≈数量×现价 枚举排列消歧，杜绝列错位。
+     */
+    static List<Map<String, Object>> parseStackedBody(List<List<String>> tabbed, int headIdx) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        String pName = null;
+        List<Double> pNums = null;
+
+        for (int i = headIdx + 1; i < tabbed.size(); i++) {
+            String code = null;
+            StringBuilder name = new StringBuilder();
+            List<Double> nums = new ArrayList<>();
+            for (String w : tabbed.get(i)) {
+                String raw = w == null ? "" : w.trim();
+                if (raw.isEmpty() || raw.contains("%") || raw.matches("^[+\\-].*")) continue;
+                String t = raw.replaceAll("[\\s,，]", "");
+                t = t.replaceAll("[.,]+$", "");                          // 「482.00.」尾点
+                if (t.isEmpty()) continue;
+                if (t.matches("\\d[\\d.]*")) {                           // 纯数字（千分位逗号可能被误识成点）
+                    int last = t.lastIndexOf('.');
+                    if (last >= 0 && last != t.indexOf('.'))
+                        t = t.substring(0, last).replace(".", "") + t.substring(last);
+                    try { nums.add(Double.parseDouble(t)); } catch (NumberFormatException ignore) {}
+                    continue;
+                }
+                if (t.matches("T[+-]?\\d*")) continue;                   // T+1 / T-1 标记
+                if (!t.matches("^[A-Za-z].*") || t.matches("\\d+[A-Za-z].*")) {
+                    // 首字符非字母（中文名称）或「数字+字母」混杂 token 不当代码
+                    if (P_CN.matcher(t).find()) {
+                        if (name.length() > 0) name.append(' ');
+                        name.append(t);
+                    }
+                    continue;
+                }
+                if (code == null) {
+                    String[] n = tryCode(t);
+                    if (n != null) { code = n[0]; continue; }
+                }
+            }
+            if (code == null && name.length() == 0) continue;            // 页眉页脚等噪音行
+
+            // 与上一行（只有名称 + 2 个数、无代码）跨行配对
+            if (pName != null) {
+                if (name.length() == 0) name.append(pName);
+                if (pNums != null && nums.size() == 2) {
+                    List<Double> merged = new ArrayList<>(pNums);
+                    merged.addAll(nums);
+                    nums = merged;
+                } else if (pNums != null && nums.isEmpty()) {
+                    nums = pNums;
+                }
+                pName = null; pNums = null;
+            }
+
+            if (code != null || nums.size() >= 2) {
+                Map<String, Object> row = buildStackedRow(name.toString(), code, nums);
+                if (row != null) out.add(row);
+            } else if (nums.size() == 2) {
+                pName = name.toString();                                 // 可能是拆分行的上半段，等代码行
+                pNums = nums;
+            }
+        }
+        return out;
+    }
+
+    /** 叠排行组装：4 个数按 {市值,数量,成本,现价} 全排列取 |数量×现价−市值| 最小者。 */
+    private static Map<String, Object> buildStackedRow(String name, String code, List<Double> nums) {
+        double qty = 0, cost = 0;
+        if (nums.size() >= 4) {
+            double bestErr = Double.MAX_VALUE;
+            int[][] perms = {{0,1,2,3},{0,1,3,2},{0,2,1,3},{0,2,3,1},{0,3,1,2},{0,3,2,1},
+                             {1,0,2,3},{1,0,3,2},{1,2,0,3},{1,2,3,0},{1,3,0,2},{1,3,2,0},
+                             {2,0,1,3},{2,0,3,1},{2,1,0,3},{2,1,3,0},{2,3,0,1},{2,3,1,0},
+                             {3,0,1,2},{3,0,2,1},{3,1,0,2},{3,1,2,0},{3,2,0,1},{3,2,1,0}};
+            for (int[] p : perms) {
+                double mv = nums.get(p[0]), q = nums.get(p[1]), c = nums.get(p[2]), pr = nums.get(p[3]);
+                if (q <= 0 || pr <= 0 || mv <= 0) continue;
+                double err = Math.abs(q * pr - mv) / mv;
+                if (err < bestErr) { bestErr = err; qty = q; cost = c; }
+            }
+        } else if (nums.size() == 2) {
+            qty = nums.get(0); cost = nums.get(1);
+        } else if (nums.size() == 1) {
+            qty = nums.get(0);
+        }
+        return buildRow(name, code, qty > 0 ? qty : null, cost > 0 ? cost : null);
+    }
+
     private static boolean hasNumericToken(List<String> words) {
         for (String w : words) {
             String t = w.replaceAll("[+%,￥$¥\\s]", "");
             if (!t.isEmpty() && t.matches("-?\\d[\\d,]*(?:\\.\\d+)?")) return true;
         }
         return false;
+    }
+
+    /**
+     * 老式股票类别代码：BRK B / BRK.B 常被 OCR 读成 BRKB，行情取不到。
+     * 在末位字母前补点（usBRKB → usBRK.B），由调用方回查行情确认后才采用，避免误改真实代码。
+     */
+    static String shareClassCode(String code) {
+        if (code == null || !code.startsWith("us")) return null;
+        String t = code.substring(2);
+        if (!t.matches("[A-Z]{3,6}")) return null;
+        return "us" + t.substring(0, t.length() - 1) + "." + t.substring(t.length() - 1);
+    }
+
+    // ------------------------------------------------------------- IBKR 行式解析
+    /** 交易所后缀（IBKR 在代码后标注上市地），按长度降序尝试剥离。 */
+    private static final String[] EXCH_WORDS = {
+            "NASDAQ.NMS", "NASDAQ.GS", "NASDAQ", "NYSEARCA", "NYSE", "ARCA", "AMEX",
+            "SEHK", "HKEX", "LSE", "TSE", "OTC"};
+
+    private static boolean isExch(String t) {
+        String s = t.replace(".", "");   // cleanToken 会剥掉点：NASDAQ.NMS → NASDAQNMS
+        for (String e : EXCH_WORDS) if (e.replace(".", "").equals(s)) return true;
+        return false;
+    }
+
+    /**
+     * IBKR 移动端持仓行：列序固定为 代码[+交易所] · 最后价格 · 持仓 · 当日盈亏 · 未实现盈亏。
+     * 例：COST NASDAQ.NMS 1005.00 5.0313 -0.81 346.13 / BRK B NYSE 548.85 12 -8.76 933.65
+     *     KONYSE 92.50 102.4536 ...（OCR 粘连）/ 700 SEHK 40.20 1000 ...（港股）。
+     * 只取前两个数字 = 价格、数量（当日/未实现盈亏忽略）；市值、净值、现金等汇总行没有
+     * 交易所后缀，自然被跳过。返回候选行，不匹配返回 null。
+     */
+    static Map<String, Object> parseIbkrLine(List<String> words) {
+        if (words == null || words.isEmpty()) return null;
+        int exchIdx = -1;
+        String codeOverride = null;
+        for (int i = 0; i < Math.min(words.size(), 4); i++) {
+            String raw = cleanToken(words.get(i)).toUpperCase();
+            if (raw.isEmpty()) continue;
+            if (isExch(raw)) { exchIdx = i; break; }
+            // OCR 粘连：KONYSE / COSTNASDAQNMS → 剥出交易所后缀
+            for (String suf : EXCH_WORDS) {
+                String s2 = suf.replace(".", "");
+                if (raw.length() > s2.length() && raw.endsWith(s2)) {
+                    String prefix = raw.substring(0, raw.length() - s2.length());
+                    if (prefix.matches("[A-Z]{1,6}") || prefix.matches("\\d{4,5}")) {
+                        codeOverride = prefix;
+                        exchIdx = i;
+                    }
+                    break;
+                }
+            }
+            if (exchIdx >= 0) break;
+        }
+        if (exchIdx < 0 || (exchIdx == 0 && codeOverride == null)) return null;
+
+        String code = codeOverride;
+        if (code == null) {
+            String raw0 = String.valueOf(words.get(0)).trim().toUpperCase();
+            if (raw0.matches("[A-Z]{1,6}[.\\s][A-Z]")) {
+                code = raw0.replaceFirst("[.\\s]", ".");      // "BRK B" / "BRK.B" → BRK.B（与 BRKB 是两个标的，不能丢点）
+            } else if (exchIdx == 2) {
+                String t1 = cleanToken(words.get(1)).toUpperCase();
+                if (t1.matches("[A-Z]")) code = cleanToken(words.get(0)).toUpperCase() + "." + t1;
+            }
+            if (code == null) code = cleanToken(words.get(0)).toUpperCase();
+        }
+        String[] norm = normalizeCode(code);
+        if (norm == null) return null;
+
+        List<Double> nums = new ArrayList<>();
+        for (int i = exchIdx + 1; i < words.size(); i++) {
+            Matcher m = P_NUM.matcher(words.get(i).replace(",", ""));
+            while (m.find()) {
+                double v = parseNum(m.group());
+                if (!Double.isNaN(v)) nums.add(v);
+            }
+        }
+        if (nums.size() < 2) return null;
+        double price = nums.get(0), qty = nums.get(1);
+        if (qty <= 0 || price <= 0) return null;
+        return buildRow("", norm[0], qty, price);
     }
 
     // ------------------------------------------------------------- 卡片分块解析
