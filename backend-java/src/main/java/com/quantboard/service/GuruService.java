@@ -361,14 +361,48 @@ public class GuruService {
             return out;
         }
         try {
-            // 1) 改写代码。期权行形如 874039100~PUT，只替换 ~ 之前的部分，后缀原样保留。
-            int changed = jdbc.update(
-                    "UPDATE guru_holding h JOIN cusip_ticker m ON m.cusip = SUBSTRING_INDEX(h.code, '~', 1) "
-                            + "SET h.code = CONCAT('us', m.ticker, "
-                            + "  IF(LOCATE('~', h.code) > 0, SUBSTRING(h.code, LOCATE('~', h.code)), '')) "
-                            + "WHERE h.code NOT LIKE 'us%'");
+            // 0) 先把这个 CUSIP 上已有的中文名挪到新代码名下。
+            //    手工补过的 CUSIP 词条（应用材料、台积电…）质量比回源取名更准，
+            //    若等代码改完再补，security_cn 只会按新 ticker 去腾讯重新查一遍。
+            jdbc.update("INSERT INTO security_cn (code, name_cn, src) "
+                    + "SELECT CONCAT('us', m.ticker), MAX(s.name_cn), 'manual' FROM guru_holding h "
+                    + "JOIN cusip_ticker m ON m.cusip = SUBSTRING_INDEX(h.code, '~', 1) "
+                    + "JOIN security_cn s ON s.code = SUBSTRING_INDEX(h.code, '~', 1) "
+                    + "WHERE h.code NOT LIKE 'us%' AND m.ticker <> '' AND s.name_cn <> '' "
+                    + "GROUP BY m.ticker "
+                    + "ON DUPLICATE KEY UPDATE security_cn.name_cn = security_cn.name_cn");
 
-            // 2) 合并改写后可能撞到一起的重复行（先累加，再删重复）
+            // 1) 改写代码。不能直接 UPDATE：唯一键 uk_gq 是 (guru_id, quarter, code)，不含 note，
+            //    两个 CUSIP 映射到同一个 ticker 时后一条会撞键、整条 UPDATE 中止。
+            //    所以走「落临时表 → 删旧行 → 合并插入」，顺手把同标的的持仓合并成一行。
+            //    ticker='' 是「查过确实没有美股代码」的负缓存，必须排除，否则 CONCAT 出来是一片空代码 us 互相撞键。
+            jdbc.execute("DROP TABLE IF EXISTS guru_holding_remap");
+            // 内层先把新代码算出来，外层再按它聚合 —— 直接在 GROUP BY 里写别名 code 会和原表 h.code 撞名
+            jdbc.execute("CREATE TABLE guru_holding_remap AS "
+                    + "SELECT guru_id, quarter, code, MAX(cusip) AS cusip, MAX(name) AS name, "
+                    + "  SUM(shares) AS shares, SUM(value_usd) AS value_usd, MAX(note) AS note FROM ( "
+                    + "  SELECT h.guru_id, h.quarter, "
+                    + "    CONCAT('us', m.ticker, IF(LOCATE('~', h.code) > 0, SUBSTRING(h.code, LOCATE('~', h.code)), '')) AS code, "
+                    + "    h.cusip, h.name, h.shares, h.value_usd, h.note "
+                    + "  FROM guru_holding h "
+                    + "  JOIN cusip_ticker m ON m.cusip = SUBSTRING_INDEX(h.code, '~', 1) "
+                    + "  WHERE h.code NOT LIKE 'us%' AND m.ticker <> '' "
+                    + ") t GROUP BY guru_id, quarter, code");
+            Long planned = jdbc.queryForObject("SELECT COUNT(*) FROM guru_holding_remap", Long.class);
+            int removed = jdbc.update("DELETE h FROM guru_holding h "
+                    + "JOIN cusip_ticker m ON m.cusip = SUBSTRING_INDEX(h.code, '~', 1) "
+                    + "WHERE h.code NOT LIKE 'us%' AND m.ticker <> ''");
+            // 撞到已存在的同名代码（另一条 CUSIP 已先映射过）时累加持股与市值，不覆盖
+            int changed = jdbc.update("INSERT INTO guru_holding "
+                    + "(guru_id, quarter, code, cusip, name, shares, value_usd, pct, note) "
+                    + "SELECT guru_id, quarter, code, cusip, name, shares, value_usd, 0, note "
+                    + "FROM guru_holding_remap "
+                    + "ON DUPLICATE KEY UPDATE "
+                    + "shares = guru_holding.shares + VALUES(shares), "
+                    + "value_usd = guru_holding.value_usd + VALUES(value_usd)");
+            jdbc.execute("DROP TABLE IF EXISTS guru_holding_remap");
+
+            // 2) 兜底合并：历史上可能已有重复行（同一机构同期同代码多条）
             List<Map<String, Object>> dup = jdbc.queryForList(
                     "SELECT guru_id, quarter, code, note, MIN(id) keep_id, SUM(shares) s, SUM(value_usd) v, COUNT(*) c "
                             + "FROM guru_holding GROUP BY guru_id, quarter, code, note HAVING c > 1");
@@ -398,7 +432,9 @@ public class GuruService {
             } catch (Exception ignore) { }
 
             out.put("ok", true);
-            out.put("remapped", changed);
+            out.put("planned", planned == null ? 0 : planned);
+            out.put("removed", removed);
+            out.put("inserted", changed);
             out.put("merged", merged);
             out.put("rows", countRows());
         } catch (Exception e) {

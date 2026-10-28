@@ -450,6 +450,12 @@ public class ApiController {
         return cusipMap.fillMissing(limit);
     }
 
+    /** OpenFIGI 查不到美国挂牌的 CUSIP，改用东财搜索接口按中文名 / 13F 发行名反查。 */
+    @PostMapping("/api/guru/cusip-search")
+    public Map<String, Object> guruCusipSearch(@RequestParam(defaultValue = "100") int limit) {
+        return cusipMap.fillBySearch(limit);
+    }
+
     /** 把存量持仓里仍以 CUSIP 当代码的行改写成正常美股代码，并合并撞车的重复行。可重复调用。 */
     @PostMapping("/api/guru/remap")
     public Map<String, Object> guruRemap() {
